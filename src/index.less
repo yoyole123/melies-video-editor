@@ -9,6 +9,57 @@
 
 .timeline-editor-engine {
 
+  .footage-bin {
+    width: 100%;
+    max-width: 800px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
+
+    .footage-card {
+      background: #2b2b2b;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      padding: 8px;
+      cursor: grab;
+      user-select: none;
+    }
+
+    .footage-card:active {
+      cursor: grabbing;
+    }
+
+    .footage-name {
+      font-size: 12px;
+      color: #ddd;
+      margin-bottom: 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .footage-preview {
+      width: 100%;
+      height: 90px;
+      display: block;
+      object-fit: cover;
+      background: #000;
+      border-radius: 4px;
+    }
+
+    .footage-audio {
+      width: 100%;
+      height: 32px;
+    }
+
+    .footage-kind {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #aaa;
+    }
+  }
+
   .player-panel {
     width: 100%;
     max-width: 800px;

@@ -49,16 +49,22 @@ export const mockEffect: Record<string, TimelineEffect> = {
     name: '播放视频',
     source: {
       start: ({ action, engine, isPlaying, time }) => {
+        const src = (action as CustomTimelineAction).data?.src;
+        if (src) videoControl.setSource(src);
         videoControl.setRate(engine.getPlayRate());
         videoControl.seek(Math.max(0, time - action.start));
         if (isPlaying) videoControl.play();
       },
       enter: ({ action, engine, isPlaying, time }) => {
+        const src = (action as CustomTimelineAction).data?.src;
+        if (src) videoControl.setSource(src);
         videoControl.setRate(engine.getPlayRate());
         videoControl.seek(Math.max(0, time - action.start));
         if (isPlaying) videoControl.play();
       },
       update: ({ action, engine, time }) => {
+        const src = (action as CustomTimelineAction).data?.src;
+        if (src) videoControl.setSource(src);
         videoControl.setRate(engine.getPlayRate());
         videoControl.seek(Math.max(0, time - action.start));
       },
