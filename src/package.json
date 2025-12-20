@@ -1,0 +1,17 @@
+{
+  "description": "An auto-generated demo by dumi",
+  "main": "index.tsx",
+  "dependencies": {
+    "@xzdarcy/react-timeline-editor": "0.1.8",
+    "antd": "4.21.6",
+    "lodash": "4.17.21",
+    "react": ">=16.9.0",
+    "react-dom": ">=16.9.0",
+    "howler": "2.2.3",
+    "lottie-web": "5.10.0",
+    "@ant-design/icons": "4.7.0"
+  },
+  "devDependencies": {
+    "typescript": "^3"
+  }
+}
