@@ -115,7 +115,15 @@ const TimelinePlayer = ({
 
   return (
     <div className="timeline-player">
-      <div className="play-control" onClick={handlePlayOrPause}>
+      <div
+        className="play-control"
+        role="button"
+        tabIndex={0}
+        onClick={handlePlayOrPause}
+        onPointerUp={(e) => {
+          if (e.pointerType !== 'mouse') handlePlayOrPause();
+        }}
+      >
         {isPlaying ? '||' : '▶'}
       </div>
       <div className="time">{timeRender(time)}</div>

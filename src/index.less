@@ -9,6 +9,10 @@
 
 .timeline-editor-engine {
 
+  // Improve touch interactions on mobile.
+  // Keep page scroll working while allowing the timeline to handle gestures.
+  touch-action: pan-y;
+
   .footage-bin {
     width: 100%;
     max-width: 800px;
@@ -24,6 +28,13 @@
       padding: 8px;
       cursor: grab;
       user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+    }
+
+    .footage-card.is-armed {
+      outline: 2px solid fade(#fff, 40);
+      outline-offset: 2px;
     }
 
     .footage-card:active {
@@ -110,6 +121,9 @@
       &-effect-effect0,
       &-effect-effect1 {
         cursor: pointer;
+
+        // Prevent browser gestures from stealing drag/resize on touch.
+        touch-action: none;
        
         background-position: bottom;
         background-repeat: repeat-x;
@@ -154,6 +168,12 @@
        
       }
     }
+  }
+
+  // Cursor: improve touch hit target on mobile.
+  .timeline-editor-cursor,
+  .timeline-editor-cursor-area {
+    touch-action: none;
   }
 
   .timeline-player {
@@ -206,6 +226,43 @@
           color: #ddd;
         }
       
+      }
+    }
+  }
+
+  @media (pointer: coarse) {
+    .footage-bin {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .player-panel {
+      height: 220px;
+    }
+
+    .timeline-editor {
+      height: 360px;
+
+      &-action {
+        height: 40px !important;
+      }
+    }
+
+    .timeline-editor-cursor-area {
+      width: 36px;
+    }
+
+    .timeline-editor-cursor-top {
+      width: 18px;
+      height: 28px;
+      transform: translate(-50%, 0) scale(1);
+    }
+
+    .timeline-player {
+      height: 44px;
+
+      .play-control {
+        width: 36px;
+        height: 36px;
       }
     }
   }
