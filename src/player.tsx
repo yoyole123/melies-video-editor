@@ -2,6 +2,7 @@ import type { TimelineState } from '@xzdarcy/react-timeline-editor';
 import { Button, Select } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { scale, scaleWidth, startLeft } from './mock';
+import audioControl from './audioControl';
 import videoControl from './videoControl';
 
 const { Option } = Select;
@@ -137,6 +138,8 @@ const TimelinePlayer = ({
     if (timelineState.current.isPlaying) {
       timelineState.current.pause();
     } else {
+      // Must be called inside a user gesture on some browsers.
+      audioControl.unlock();
       timelineState.current.play({ autoEnd: true });
     }
   };
