@@ -108,6 +108,22 @@
 
     &-action {
       border-radius: @border-radius;
+
+      // Selected action (clip) only.
+      // The library prefixes internal classes, so `action-selected` becomes `timeline-editor-action-selected`.
+      &.timeline-editor-action-selected {
+        // Use inset highlight so it stays visible even if the action is clipped.
+        box-shadow: inset 0 0 0 3px fade(#fff, 55);
+        outline: 2px solid fade(#fff, 35);
+        outline-offset: -2px;
+
+        // Bold clip label content, but only for the selected clip.
+        .effect0-text,
+        .effect1-text {
+          font-weight: 700;
+        }
+      }
+
       &-effect-effect0 {
         background-color: @color-audio;
         background-image: url("/assets/soundWave.png");

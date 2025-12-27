@@ -1,6 +1,6 @@
 import { Timeline } from '@xzdarcy/react-timeline-editor';
 import type { TimelineState } from '@xzdarcy/react-timeline-editor';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CustomRender0, CustomRender1 } from './custom';
 import './index.less';
 import { mockData, mockEffect, scale, scaleWidth, startLeft } from './mock';
@@ -76,7 +76,8 @@ const DraggableFootageCard = ({ item, hint }: { item: FootageItem; hint: string 
 };
 
 const TimelineEditor = () => {
-  const [data, setData] = useState(defaultEditorData);
+  const [data, setData] = useState<CusTomTimelineRow[]>(defaultEditorData as CusTomTimelineRow[]);
+  const [selectedActionId, setSelectedActionId] = useState<string | null>(null);
   const isMobile = useCoarsePointer();
   const timelineState = useRef<TimelineState | null>(null);
   const playerPanel = useRef<HTMLDivElement | null>(null);
@@ -148,7 +149,7 @@ const TimelineEditor = () => {
     const root = timelineWrapRef.current;
     if (!root) return 0;
     const grid = root.querySelector('.timeline-editor-edit-area .ReactVirtualized__Grid') as HTMLElement | null;
-    return (grid as any)?.scrollLeft ?? 0;
+    return grid?.scrollLeft ?? 0;
   };
 
   const timeFromClientX = (clientX: number) => {
@@ -162,20 +163,36 @@ const TimelineEditor = () => {
     return Math.max(0, time);
   };
 
-  const setSelection = (rowId: string, actionId: string) => {
-    setData((prev) => {
-      const next = structuredClone(prev) as CusTomTimelineRow[];
-      for (const row of next) {
-        (row as any).selected = row.id === rowId;
-        const actions = (row as any).actions;
-        if (!Array.isArray(actions)) continue;
-        for (const action of actions) {
-          (action as any).selected = row.id === rowId && (action as any).id === actionId;
-        }
-      }
-      return next;
+  /**
+   * Strip selection flags from editor data so our canonical state stays "clean".
+   * This prevents selection taps from generating noisy undo/redo steps later.
+   */
+  const cleanEditorData = (rows: CusTomTimelineRow[]): CusTomTimelineRow[] =>
+    rows.map((row) => ({
+      ...row,
+      selected: undefined,
+      actions: (row.actions ?? []).map((action) => ({ ...action, selected: undefined })),
+    }));
+
+  /**
+   * Add selection flags only for rendering. The timeline library uses `action.selected`
+   * to attach the `action-selected` CSS class.
+   */
+  const editorDataForRender = useMemo(() => {
+    if (!selectedActionId) return data;
+
+    return data.map((row) => {
+      const hasSelected = (row.actions ?? []).some((action) => String(action.id) === selectedActionId);
+      return {
+        ...row,
+        selected: hasSelected,
+        actions: (row.actions ?? []).map((action) => ({
+          ...action,
+          selected: String(action.id) === selectedActionId,
+        })),
+      };
     });
-  };
+  }, [data, selectedActionId]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -293,20 +310,7 @@ const TimelineEditor = () => {
 
     // Tap on an action: select it and seek to its start time.
     if (rowId && actionId) {
-      setSelection(rowId, actionId);
-
-      const rows = Array.isArray(data) ? data : [];
-      for (const row of rows) {
-        if ((row as any)?.id !== rowId) continue;
-        const actions = (row as any)?.actions;
-        if (!Array.isArray(actions)) break;
-        const found = actions.find((a: any) => a?.id === actionId);
-        const startTime = Number(found?.start);
-        if (timelineState.current && Number.isFinite(startTime)) {
-          timelineState.current.setTime(startTime);
-        }
-        break;
-      }
+      setSelectedActionId(actionId);
       return;
     }
 
@@ -369,8 +373,13 @@ const TimelineEditor = () => {
             rowHeight={isMobile ? 48 : undefined}
             autoScroll={true}
             ref={timelineState}
-            editorData={data}
+            editorData={editorDataForRender}
             effects={mockEffect}
+            onClickActionOnly={(_e, { action }) => {
+              const clickedAction = action as unknown as CustomTimelineAction;
+              if (!clickedAction?.id) return;
+              setSelectedActionId(String(clickedAction.id));
+            }}
             onActionMoving={({ action, row, start, end }) => {
             const nextStart = Number(start);
             const nextEnd = Number(end);
@@ -390,7 +399,7 @@ const TimelineEditor = () => {
             if (wouldOverlapInRow(typedRow, String(action.id), nextStart, nextEnd)) return false;
           }}
             onChange={(data) => {
-              setData(data as CusTomTimelineRow[]);
+              setData(cleanEditorData(data as CusTomTimelineRow[]));
             }}
             getActionRender={(action, row) => {
               if (action.effectId === 'effect0') {
