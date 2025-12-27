@@ -11,6 +11,11 @@ export interface CustomTimelineAction extends TimelineAction {
     src: string;
     previewSrc?: string;
     name: string;
+    /**
+     * In-point offset into the underlying media (seconds).
+     * Used for split clips so the right segment continues from the correct time.
+     */
+    offset?: number;
   };
 }
 
@@ -25,16 +30,16 @@ export const mockEffect: Record<string, TimelineEffect> = {
     source: {
       start: ({ action, engine, isPlaying, time }) => {
         if (isPlaying) {
-          const src = (action as CustomTimelineAction).data.src;
+          const { src, offset } = (action as CustomTimelineAction).data;
           audioControl.warm(src);
-          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time });
+          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time, offset });
         }
       },
       enter: ({ action, engine, isPlaying, time }) => {
         if (isPlaying) {
-          const src = (action as CustomTimelineAction).data.src;
+          const { src, offset } = (action as CustomTimelineAction).data;
           audioControl.warm(src);
-          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time });
+          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time, offset });
         }
       },
       leave: ({ action }) => {
@@ -50,7 +55,7 @@ export const mockEffect: Record<string, TimelineEffect> = {
     name: 'Play video',
     source: {
       start: ({ action, engine, isPlaying, time }) => {
-        const { src, previewSrc } = (action as CustomTimelineAction).data ?? ({} as any);
+        const { src, previewSrc, offset } = (action as CustomTimelineAction).data ?? ({} as any);
         const chosen = previewSrc || src;
         if (chosen) {
           videoControl.warm(chosen);
@@ -58,13 +63,14 @@ export const mockEffect: Record<string, TimelineEffect> = {
         }
         videoControl.setActive(true);
         videoControl.setRate(engine.getPlayRate());
-        videoControl.seek(Math.max(0, time - action.start), { force: true });
+        const inPoint = Number(offset ?? 0);
+        videoControl.seek(Math.max(0, time - action.start + (Number.isFinite(inPoint) ? inPoint : 0)), { force: true });
         if (isPlaying) {
           videoControl.play();
         }
       },
       enter: ({ action, engine, isPlaying, time }) => {
-        const { src, previewSrc } = (action as CustomTimelineAction).data ?? ({} as any);
+        const { src, previewSrc, offset } = (action as CustomTimelineAction).data ?? ({} as any);
         const chosen = previewSrc || src;
         if (chosen) {
           videoControl.warm(chosen);
@@ -72,13 +78,14 @@ export const mockEffect: Record<string, TimelineEffect> = {
         }
         videoControl.setActive(true);
         videoControl.setRate(engine.getPlayRate());
-        videoControl.seek(Math.max(0, time - action.start), { force: true });
+        const inPoint = Number(offset ?? 0);
+        videoControl.seek(Math.max(0, time - action.start + (Number.isFinite(inPoint) ? inPoint : 0)), { force: true });
         if (isPlaying) {
           videoControl.play();
         }
       },
       update: ({ action, engine, time, isPlaying }) => {
-        const { src, previewSrc } = (action as CustomTimelineAction).data ?? ({} as any);
+        const { src, previewSrc, offset } = (action as CustomTimelineAction).data ?? ({} as any);
         const chosen = previewSrc || src;
         if (chosen) videoControl.setSource(chosen);
         videoControl.setActive(true);
@@ -86,7 +93,8 @@ export const mockEffect: Record<string, TimelineEffect> = {
         // Smooth preview: NEVER seek while playing (seeks cause buffering).
         // When paused/scrubbing, we force seek to show the correct frame.
         if (!isPlaying) {
-          videoControl.seek(Math.max(0, time - action.start), { force: true });
+          const inPoint = Number(offset ?? 0);
+          videoControl.seek(Math.max(0, time - action.start + (Number.isFinite(inPoint) ? inPoint : 0)), { force: true });
         }
       },
       leave: () => {

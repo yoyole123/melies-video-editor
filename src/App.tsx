@@ -318,8 +318,25 @@ const TimelineEditor = () => {
       pushHistory(prev);
 
       const rightActionId = `${String(foundAction.id)}-r-${uid()}`;
-      const left: CustomTimelineAction = { ...foundAction, start, end: cursorTime, id: foundAction.id };
-      const right: CustomTimelineAction = { ...foundAction, start: cursorTime, end, id: rightActionId };
+      const currentOffsetRaw = Number((foundAction as any)?.data?.offset ?? 0);
+      const currentOffset = Number.isFinite(currentOffsetRaw) ? currentOffsetRaw : 0;
+      const splitDelta = cursorTime - start;
+      const rightOffset = currentOffset + (Number.isFinite(splitDelta) ? splitDelta : 0);
+
+      const left: CustomTimelineAction = {
+        ...foundAction,
+        start,
+        end: cursorTime,
+        id: foundAction.id,
+        data: { ...(foundAction as any).data, offset: currentOffset },
+      };
+      const right: CustomTimelineAction = {
+        ...foundAction,
+        start: cursorTime,
+        end,
+        id: rightActionId,
+        data: { ...(foundAction as any).data, offset: rightOffset },
+      };
 
       const next = structuredClone(prev) as CusTomTimelineRow[];
       const nextRow = next[foundRowIndex];

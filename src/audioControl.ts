@@ -24,6 +24,7 @@ class AudioControl {
     {
       src: string;
       startTime: number;
+      offset: number;
       soundId: number;
       engine: TimelineEngine;
       lastResyncAtMs: number;
@@ -76,19 +77,23 @@ class AudioControl {
     void this.getHowl(src);
   }
 
-  private seekForEngineTime(howl: Howl, soundId: number, startTime: number, engineTime: number) {
+  private seekForEngineTime(howl: Howl, soundId: number, startTime: number, engineTime: number, offsetSeconds: number) {
+    const rawOffset = Number(offsetSeconds);
+    const offset = Number.isFinite(rawOffset) ? rawOffset : 0;
     const duration = howl.duration();
     if (!Number.isFinite(duration) || duration <= 0) {
-      howl.seek(Math.max(0, engineTime - startTime), soundId);
+      howl.seek(Math.max(0, engineTime - startTime + offset), soundId);
       return;
     }
-    const raw = (engineTime - startTime) % duration;
-    const offset = raw < 0 ? raw + duration : raw;
-    howl.seek(offset, soundId);
+    const raw = (engineTime - startTime + offset) % duration;
+    const position = raw < 0 ? raw + duration : raw;
+    howl.seek(position, soundId);
   }
 
-  start(data: { actionId: string; engine: TimelineEngine; src: string; startTime: number; time: number }) {
+  start(data: { actionId: string; engine: TimelineEngine; src: string; startTime: number; time: number; offset?: number }) {
     const { actionId, src, startTime, time, engine } = data;
+    const requestedOffset = Number(data.offset ?? 0);
+    const offsetSeconds = Number.isFinite(requestedOffset) ? requestedOffset : 0;
 
     // If this action is already active, just re-sync.
     const existing = this.activeByActionId[actionId];
@@ -107,7 +112,7 @@ class AudioControl {
 
       // When scrubbing/paused, we do want immediate re-sync.
       if (!engine.isPlaying) {
-        this.seekForEngineTime(howl, existing.soundId, existing.startTime, time);
+        this.seekForEngineTime(howl, existing.soundId, existing.startTime, time, existing.offset);
       }
       return;
     }
@@ -115,7 +120,7 @@ class AudioControl {
     const howl = this.getHowl(src);
     const soundId = howl.play();
     howl.rate(engine.getPlayRate(), soundId);
-    this.seekForEngineTime(howl, soundId, startTime, time);
+    this.seekForEngineTime(howl, soundId, startTime, time, offsetSeconds);
 
     let lastResyncAtMs = performance.now();
 
@@ -123,7 +128,7 @@ class AudioControl {
       // While playing, avoid seeking every frame (it can cause silence/stuttering).
       // Instead, occasionally re-sync if drift becomes noticeable.
       if (!engine.isPlaying) {
-        this.seekForEngineTime(howl, soundId, startTime, time);
+        this.seekForEngineTime(howl, soundId, startTime, time, offsetSeconds);
         return;
       }
 
@@ -132,10 +137,10 @@ class AudioControl {
       lastResyncAtMs = now;
 
       try {
-        const expected = Math.max(0, time - startTime);
+        const expected = Math.max(0, time - startTime + offsetSeconds);
         const currentPos = Number(howl.seek(soundId));
         if (Number.isFinite(currentPos) && Math.abs(currentPos - expected) > 0.25) {
-          this.seekForEngineTime(howl, soundId, startTime, time);
+          this.seekForEngineTime(howl, soundId, startTime, time, offsetSeconds);
         }
       } catch {
         // ignore
@@ -151,6 +156,7 @@ class AudioControl {
     this.activeByActionId[actionId] = {
       src,
       startTime,
+      offset: offsetSeconds,
       soundId,
       engine,
       lastResyncAtMs,
