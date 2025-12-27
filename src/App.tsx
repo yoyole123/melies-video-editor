@@ -110,7 +110,6 @@ const TimelineEditor = () => {
       <div className="player-panel" ref={playerPanel}>
         <video
           className="player-video"
-          src={data?.[0]?.actions?.[0]?.data?.previewSrc ?? data?.[0]?.actions?.[0]?.data?.src}
           preload="auto"
           playsInline
           controls={false}
@@ -122,7 +121,7 @@ const TimelineEditor = () => {
           ref={(el) => videoControl.attach(el)}
         />
       </div>
-      <TimelinePlayer timelineState={timelineState} autoScrollWhenPlay={autoScrollWhenPlay} />
+      <TimelinePlayer timelineState={timelineState} autoScrollWhenPlay={autoScrollWhenPlay} editorData={data} />
       <div
         ref={timelineWrapRef}
         onDragOver={(e) => e.preventDefault()}

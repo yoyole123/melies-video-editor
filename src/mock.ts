@@ -56,10 +56,10 @@ export const mockEffect: Record<string, TimelineEffect> = {
           videoControl.warm(chosen);
           videoControl.setSource(chosen);
         }
+        videoControl.setActive(true);
         videoControl.setRate(engine.getPlayRate());
         videoControl.seek(Math.max(0, time - action.start), { force: true });
         if (isPlaying) {
-          videoControl.bindEngine(engine, action.start);
           videoControl.play();
         }
       },
@@ -70,10 +70,10 @@ export const mockEffect: Record<string, TimelineEffect> = {
           videoControl.warm(chosen);
           videoControl.setSource(chosen);
         }
+        videoControl.setActive(true);
         videoControl.setRate(engine.getPlayRate());
         videoControl.seek(Math.max(0, time - action.start), { force: true });
         if (isPlaying) {
-          videoControl.bindEngine(engine, action.start);
           videoControl.play();
         }
       },
@@ -81,6 +81,7 @@ export const mockEffect: Record<string, TimelineEffect> = {
         const { src, previewSrc } = (action as CustomTimelineAction).data ?? ({} as any);
         const chosen = previewSrc || src;
         if (chosen) videoControl.setSource(chosen);
+        videoControl.setActive(true);
         videoControl.setRate(engine.getPlayRate());
         // Smooth preview: NEVER seek while playing (seeks cause buffering).
         // When paused/scrubbing, we force seek to show the correct frame.
@@ -91,10 +92,12 @@ export const mockEffect: Record<string, TimelineEffect> = {
       leave: () => {
         videoControl.pause();
         videoControl.unbindEngine();
+        videoControl.setActive(false);
       },
       stop: () => {
         videoControl.pause();
         videoControl.unbindEngine();
+        videoControl.setActive(false);
       },
     },
   },
