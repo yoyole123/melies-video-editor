@@ -5,13 +5,75 @@ import { CustomRender0, CustomRender1 } from './custom';
 import './index.less';
 import { mockData, mockEffect, scale, scaleWidth, startLeft } from './mock';
 import type { CustomTimelineAction, CusTomTimelineRow } from './mock';
-import { FOOTAGE_BIN } from './footageBin';
+import { FOOTAGE_BIN, type FootageItem } from './footageBin';
 import TimelinePlayer from './player';
 import videoControl from './videoControl';
 import mediaCache from './mediaCache';
 import { useCoarsePointer } from './useCoarsePointer';
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  TouchSensor,
+  rectIntersection,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragMoveEvent,
+  type DragStartEvent,
+} from '@dnd-kit/core';
 
 const defaultEditorData = structuredClone(mockData);
+
+const FootageCard = ({ item, hint, isDragging }: { item: FootageItem; hint: string; isDragging: boolean }) => {
+  return (
+    <div className={`footage-card${isDragging ? ' is-dragging' : ''}`}>
+      <div className="footage-name">{item.name}</div>
+      {item.kind === 'video' ? (
+        <video
+          className="footage-preview"
+          src={item.src}
+          muted
+          preload="metadata"
+          draggable={false}
+          onDragStart={(e) => e.preventDefault()}
+          playsInline
+        />
+      ) : (
+        <audio
+          className="footage-audio"
+          src={item.src}
+          controls
+          preload="metadata"
+          draggable={false}
+          onDragStart={(e) => e.preventDefault()}
+        />
+      )}
+      <div className="footage-kind">{hint}</div>
+    </div>
+  );
+};
+
+const DraggableFootageCard = ({ item, hint }: { item: FootageItem; hint: string }) => {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: `footage-${item.id}`,
+    data: { item },
+  });
+
+  const style: React.CSSProperties | undefined = transform
+    ? {
+        transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
+      }
+    : undefined;
+
+  return (
+    <div ref={setNodeRef} style={style} {...listeners} {...attributes}>
+      <FootageCard item={item} hint={hint} isDragging={isDragging} />
+    </div>
+  );
+};
 
 const TimelineEditor = () => {
   const [data, setData] = useState(defaultEditorData);
@@ -20,8 +82,8 @@ const TimelineEditor = () => {
   const playerPanel = useRef<HTMLDivElement | null>(null);
   const timelineWrapRef = useRef<HTMLDivElement | null>(null);
   const autoScrollWhenPlay = useRef<boolean>(true);
-  const [armedFootageId, setArmedFootageId] = useState<string | null>(null);
-  const armedFootageRef = useRef<(typeof FOOTAGE_BIN)[number] | null>(null);
+  const [activeFootage, setActiveFootage] = useState<FootageItem | null>(null);
+  const [activeFootageSize, setActiveFootageSize] = useState<{ width: number; height: number } | null>(null);
   const timelinePointerDownRef = useRef<{ x: number; y: number } | null>(null);
   const cursorDraggingRef = useRef<{ pointerId: number } | null>(null);
 
@@ -89,30 +151,6 @@ const TimelineEditor = () => {
     return (grid as any)?.scrollLeft ?? 0;
   };
 
-  const dropTimeFromEvent = (e: React.DragEvent) => {
-    const root = timelineWrapRef.current;
-    if (!root) return 0;
-    const editArea = root.querySelector('.timeline-editor-edit-area') as HTMLElement | null;
-    const rect = (editArea ?? root).getBoundingClientRect();
-    const position = e.clientX - rect.x;
-    const left = position + getTimelineScrollLeft();
-    const time = ((left - startLeft) * scale) / scaleWidth;
-    return Math.max(0, time);
-  };
-
-  const handleDropOnTimeline = (e: React.DragEvent) => {
-    e.preventDefault();
-    const raw = e.dataTransfer.getData('application/x-footage-item');
-    if (!raw) return;
-    try {
-      const item = JSON.parse(raw) as { kind: 'video' | 'audio'; src: string; name: string; defaultDuration?: number };
-      const at = dropTimeFromEvent(e);
-      insertActionAtTime(item, at);
-    } catch {
-      // ignore
-    }
-  };
-
   const timeFromClientX = (clientX: number) => {
     const root = timelineWrapRef.current;
     if (!root) return 0;
@@ -139,15 +177,59 @@ const TimelineEditor = () => {
     });
   };
 
-  const clearArmedFootage = () => {
-    armedFootageRef.current = null;
-    setArmedFootageId(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    // On touch, require a short press-hold before starting drag, so scroll is still possible.
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 6 } })
+  );
+
+  const { setNodeRef: setTimelineDropRef, isOver: isTimelineOver } = useDroppable({ id: 'timeline-drop' });
+
+  const handleDragStart = (event: DragStartEvent) => {
+    const item = (event.active.data.current as any)?.item as FootageItem | undefined;
+    setActiveFootage(item ?? null);
+
+    const initial = event.active.rect.current.initial;
+    if (initial) {
+      setActiveFootageSize({ width: initial.width, height: initial.height });
+    } else {
+      setActiveFootageSize(null);
+    }
+  };
+
+  const handleDragMove = (event: DragMoveEvent) => {
+    if (activeFootageSize) return;
+    const initial = event.active.rect.current.initial;
+    if (initial) {
+      setActiveFootageSize({ width: initial.width, height: initial.height });
+    }
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const item = (event.active.data.current as any)?.item as FootageItem | undefined;
+    const overTimeline = String(event.over?.id ?? '') === 'timeline-drop';
+    const cursorTime = timelineState.current?.getTime ? timelineState.current.getTime() : 0;
+    const shouldInsertAtCursor = Boolean(item) && (overTimeline || event.over == null);
+
+    if (item && shouldInsertAtCursor) {
+      insertActionAtTime(item, Math.max(0, cursorTime));
+    }
+
+    setActiveFootage(null);
+    setActiveFootageSize(null);
+  };
+
+  const handleDragCancel = () => {
+    setActiveFootage(null);
+    setActiveFootageSize(null);
   };
 
   const handleTimelinePointerDown = (e: React.PointerEvent) => {
     if (!isMobile) return;
     // Only treat touch/pen as mobile gesture; mouse keeps desktop behavior.
     if (e.pointerType === 'mouse') return;
+    // If a dnd-kit drag is active, let it own the gesture.
+    if (activeFootage) return;
 
     // Cursor drag on mobile: the library's cursor drag is mouse-event oriented, so we shim it.
     const target = e.target as HTMLElement | null;
@@ -170,6 +252,7 @@ const TimelineEditor = () => {
   const handleTimelinePointerMove = (e: React.PointerEvent) => {
     if (!isMobile) return;
     if (e.pointerType === 'mouse') return;
+    if (activeFootage) return;
     if (!cursorDraggingRef.current) return;
     if (cursorDraggingRef.current.pointerId !== e.pointerId) return;
 
@@ -181,6 +264,7 @@ const TimelineEditor = () => {
   const handleTimelinePointerUp = (e: React.PointerEvent) => {
     if (!isMobile) return;
     if (e.pointerType === 'mouse') return;
+    if (activeFootage) return;
 
     // Finish cursor drag and don't treat it as a tap.
     if (cursorDraggingRef.current && cursorDraggingRef.current.pointerId === e.pointerId) {
@@ -228,89 +312,66 @@ const TimelineEditor = () => {
 
     const t = timeFromClientX(e.clientX);
 
-    // If a footage item is armed, releasing on the timeline inserts it here.
-    if (armedFootageRef.current) {
-      insertActionAtTime(armedFootageRef.current, t);
-      clearArmedFootage();
-      return;
-    }
-
     // Otherwise, releasing on empty space just sets the playhead time.
     if (timelineState.current) timelineState.current.setTime(t);
   };
 
   return (
-    <div className="timeline-editor-engine">
-      <div className="player-config">
-        <div className="footage-bin">
-          {FOOTAGE_BIN.map((item) => (
-            <div
-              key={item.id}
-              className={`footage-card${armedFootageId === item.id ? ' is-armed' : ''}`}
-              draggable={!isMobile}
-              onDragStart={(e) => {
-                if (isMobile) return;
-                e.dataTransfer.effectAllowed = 'copy';
-                e.dataTransfer.setData('application/x-footage-item', JSON.stringify(item));
-              }}
-              onPointerDown={(e) => {
-                if (!isMobile) return;
-                if (e.pointerType === 'mouse') return;
-                // Arm item on press (mobile replacement for drag start).
-                armedFootageRef.current = item;
-                setArmedFootageId(item.id);
-              }}
-              onPointerUp={(e) => {
-                if (!isMobile) return;
-                if (e.pointerType === 'mouse') return;
-                // Keep it armed until the user releases on the timeline.
-                e.preventDefault();
-              }}
-            >
-              <div className="footage-name">{item.name}</div>
-              {item.kind === 'video' ? (
-                <video className="footage-preview" src={item.src} muted preload="metadata" />
-              ) : (
-                <audio className="footage-audio" src={item.src} controls preload="metadata" />
-              )}
-              <div className="footage-kind">{isMobile ? 'Press to pick up, release on timeline' : 'Drag into timeline'}</div>
-            </div>
-          ))}
+    <DndContext
+      sensors={sensors}
+      collisionDetection={rectIntersection}
+      onDragStart={handleDragStart}
+      onDragMove={handleDragMove}
+      onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
+    >
+      <div className="timeline-editor-engine">
+        <div className="player-config">
+          <div className="footage-bin">
+            {FOOTAGE_BIN.map((item) => (
+              <DraggableFootageCard
+                key={item.id}
+                item={item}
+                hint={isMobile ? 'Press-hold, then drag into timeline' : 'Drag into timeline'}
+              />
+            ))}
+          </div>
         </div>
-      </div>
-      <div className="player-panel" ref={playerPanel}>
-        <video
-          className="player-video"
-          preload="auto"
-          playsInline
-          controls={false}
-          disablePictureInPicture
-          disableRemotePlayback
-          controlsList="nodownload noplaybackrate noremoteplayback"
-          tabIndex={-1}
-          onContextMenu={(e) => e.preventDefault()}
-          ref={(el) => videoControl.attach(el)}
-        />
-      </div>
-      <TimelinePlayer timelineState={timelineState} autoScrollWhenPlay={autoScrollWhenPlay} editorData={data} />
-      <div
-        ref={timelineWrapRef}
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={handleDropOnTimeline}
-        onPointerDown={handleTimelinePointerDown}
-        onPointerMove={handleTimelinePointerMove}
-        onPointerUp={handleTimelinePointerUp}
-      >
-        <Timeline
-          scale={scale}
-          scaleWidth={scaleWidth}
-          startLeft={startLeft}
-          rowHeight={isMobile ? 48 : undefined}
-          autoScroll={true}
-          ref={timelineState}
-          editorData={data}
-          effects={mockEffect}
-          onActionMoving={({ action, row, start, end }) => {
+        <div className="player-panel" ref={playerPanel}>
+          <video
+            className="player-video"
+            preload="auto"
+            playsInline
+            controls={false}
+            disablePictureInPicture
+            disableRemotePlayback
+            controlsList="nodownload noplaybackrate noremoteplayback"
+            tabIndex={-1}
+            onContextMenu={(e) => e.preventDefault()}
+            ref={(el) => videoControl.attach(el)}
+          />
+        </div>
+        <TimelinePlayer timelineState={timelineState} autoScrollWhenPlay={autoScrollWhenPlay} editorData={data} />
+        <div
+          className={`timeline-drop${isTimelineOver ? ' is-over' : ''}`}
+          ref={(node) => {
+            timelineWrapRef.current = node;
+            setTimelineDropRef(node);
+          }}
+          onPointerDown={handleTimelinePointerDown}
+          onPointerMove={handleTimelinePointerMove}
+          onPointerUp={handleTimelinePointerUp}
+        >
+          <Timeline
+            scale={scale}
+            scaleWidth={scaleWidth}
+            startLeft={startLeft}
+            rowHeight={isMobile ? 48 : undefined}
+            autoScroll={true}
+            ref={timelineState}
+            editorData={data}
+            effects={mockEffect}
+            onActionMoving={({ action, row, start, end }) => {
             const nextStart = Number(start);
             const nextEnd = Number(end);
             if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd)) return false;
@@ -319,7 +380,7 @@ const TimelineEditor = () => {
             const typedRow = row as CusTomTimelineRow;
             if (wouldOverlapInRow(typedRow, String(action.id), nextStart, nextEnd)) return false;
           }}
-          onActionResizing={({ action, row, start, end }) => {
+            onActionResizing={({ action, row, start, end }) => {
             const nextStart = Number(start);
             const nextEnd = Number(end);
             if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd)) return false;
@@ -328,19 +389,38 @@ const TimelineEditor = () => {
             const typedRow = row as CusTomTimelineRow;
             if (wouldOverlapInRow(typedRow, String(action.id), nextStart, nextEnd)) return false;
           }}
-          onChange={(data) => {
-            setData(data as CusTomTimelineRow[]);
-          }}
-          getActionRender={(action, row) => {
-            if (action.effectId === 'effect0') {
-              return <CustomRender0 action={action as CustomTimelineAction} row={row as CusTomTimelineRow} />;
-            } else if (action.effectId === 'effect1') {
-              return <CustomRender1 action={action as CustomTimelineAction} row={row as CusTomTimelineRow} />;
-            }
-          }}
-        />
+            onChange={(data) => {
+              setData(data as CusTomTimelineRow[]);
+            }}
+            getActionRender={(action, row) => {
+              if (action.effectId === 'effect0') {
+                return <CustomRender0 action={action as CustomTimelineAction} row={row as CusTomTimelineRow} />;
+              } else if (action.effectId === 'effect1') {
+                return <CustomRender1 action={action as CustomTimelineAction} row={row as CusTomTimelineRow} />;
+              }
+            }}
+          />
+        </div>
+
+        <DragOverlay>
+          {activeFootage ? (
+            <div
+              className="footage-overlay"
+              style={
+                activeFootageSize
+                  ? {
+                      width: activeFootageSize.width,
+                      height: activeFootageSize.height,
+                    }
+                  : undefined
+              }
+            >
+              <FootageCard item={activeFootage} hint="Drop on timeline" isDragging={true} />
+            </div>
+          ) : null}
+        </DragOverlay>
       </div>
-    </div>
+    </DndContext>
   );
 };
 export default TimelineEditor;
