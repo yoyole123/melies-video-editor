@@ -1,5 +1,5 @@
 import type { TimelineState } from '@xzdarcy/react-timeline-editor';
-import { Select } from 'antd';
+import { Button, Select } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { scale, scaleWidth, startLeft } from './mock';
 import videoControl from './videoControl';
@@ -18,6 +18,7 @@ const TimelinePlayer = ({
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [time, setTime] = useState(0);
+  const [isExporting, setIsExporting] = useState(false);
   const lastUiUpdateAt = useRef(0);
   const lastToggleAt = useRef(0);
 
@@ -114,6 +115,69 @@ const TimelinePlayer = ({
     return <>{`${min}:${second}.${float.replace('0.', '')}`}</>;
   };
 
+  const collectUniqueAssetSrcs = () => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const rows = Array.isArray(editorData) ? editorData : [];
+    for (const row of rows) {
+      const actions = (row as any)?.actions;
+      if (!Array.isArray(actions)) continue;
+      for (const action of actions) {
+        const src = (action as any)?.data?.src;
+        if (!src) continue;
+        const key = String(src);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(key);
+      }
+    }
+    return out;
+  };
+
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Give the browser a moment to start the download before revoking.
+    setTimeout(() => URL.revokeObjectURL(url), 3_000);
+  };
+
+  const handleExport = async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    try {
+      const srcs = collectUniqueAssetSrcs();
+      const form = new FormData();
+      form.append('timeline', JSON.stringify({ editorData }));
+
+      for (const src of srcs) {
+        const resp = await fetch(src);
+        if (!resp.ok) throw new Error(`Failed to fetch asset: ${src} (${resp.status})`);
+        const blob = await resp.blob();
+        form.append('assets', blob, encodeURIComponent(src));
+      }
+
+      const resp = await fetch('/export', {
+        method: 'POST',
+        body: form,
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new Error(text || `Export failed (${resp.status})`);
+      }
+
+      const blob = await resp.blob();
+      downloadBlob(blob, 'export.mp4');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   return (
     <div className="timeline-player">
       <div
@@ -141,6 +205,12 @@ const TimelinePlayer = ({
             <Option key={rate} value={rate}>{`${rate.toFixed(1)}x`}</Option>
           ))}
         </Select>
+      </div>
+
+      <div className="export-control">
+        <Button size="small" type="primary" loading={isExporting} onClick={handleExport}>
+          Export
+        </Button>
       </div>
     </div>
   );
