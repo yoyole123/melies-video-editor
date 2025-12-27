@@ -89,7 +89,7 @@ const TimelinePlayer = ({
     };
   }, [editorData]);
 
-  // 开始或暂停
+  // Start or pause
   const handlePlayOrPause = () => {
     if (!timelineState.current) return;
     if (timelineState.current.isPlaying) {
@@ -99,13 +99,13 @@ const TimelinePlayer = ({
     }
   };
 
-  // 设置播放速率
+  // Set playback rate
   const handleRateChange = (rate: number) => {
     if (!timelineState.current) return;
     timelineState.current.setPlayRate(rate);
   };
 
-  // 时间展示
+  // Time display
   const timeRender = (time: number) => {
     const float = (parseInt((time % 1) * 100 + '') + '').padStart(2, '0');
     const min = (parseInt(time / 60 + '') + '').padStart(2, '0');
@@ -122,7 +122,7 @@ const TimelinePlayer = ({
       <div className="rate-control">
         <Select size={'small'} defaultValue={1} style={{ width: 120 }} onChange={handleRateChange}>
           {Rates.map((rate) => (
-            <Option key={rate} value={rate}>{`${rate.toFixed(1)}倍速`}</Option>
+            <Option key={rate} value={rate}>{`${rate.toFixed(1)}x`}</Option>
           ))}
         </Select>
       </div>

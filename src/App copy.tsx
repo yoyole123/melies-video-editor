@@ -19,8 +19,8 @@ const TimelineEditor = () => {
     <div className="timeline-editor-engine">
       <div className="player-config">
         <Switch
-          checkedChildren="开启运行时自动滚动"
-          unCheckedChildren="禁用运行时自动滚动"
+          checkedChildren="Auto-scroll while playing"
+          unCheckedChildren="Auto-scroll disabled"
           defaultChecked={autoScrollWhenPlay.current}
           onChange={(e) => (autoScrollWhenPlay.current = e)}
           style={{ marginBottom: 20 }}

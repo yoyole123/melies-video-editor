@@ -21,7 +21,7 @@ export interface CusTomTimelineRow extends TimelineRow {
 export const mockEffect: Record<string, TimelineEffect> = {
   effect0: {
     id: 'effect0',
-    name: '播放音效',
+    name: 'Play audio',
     source: {
       start: ({ action, engine, isPlaying, time }) => {
         if (isPlaying) {
@@ -47,7 +47,7 @@ export const mockEffect: Record<string, TimelineEffect> = {
   },
   effect1: {
     id: 'effect1',
-    name: '播放视频',
+    name: 'Play video',
     source: {
       start: ({ action, engine, isPlaying, time }) => {
         const { src, previewSrc } = (action as CustomTimelineAction).data ?? ({} as any);
