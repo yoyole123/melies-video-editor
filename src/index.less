@@ -218,6 +218,40 @@
       width: 70px;
     }
 
+    .history-tools {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .history-tool {
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background-color: #666;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+
+      img {
+        width: 16px;
+        height: 16px;
+        display: block;
+        user-select: none;
+        -webkit-user-select: none;
+        pointer-events: none;
+      }
+
+      &:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+    }
+
     .rate-control {
       margin-left: auto;
 
@@ -328,6 +362,16 @@
       }
 
       .clip-tool {
+        width: 36px;
+        height: 36px;
+
+        img {
+          width: 20px;
+          height: 20px;
+        }
+      }
+
+      .history-tool {
         width: 36px;
         height: 36px;
 

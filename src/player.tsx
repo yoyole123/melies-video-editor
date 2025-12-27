@@ -13,12 +13,20 @@ const TimelinePlayer = ({
   editorData,
   selectedActionId,
   onDeleteSelectedClip,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
 }: {
   timelineState: React.MutableRefObject<TimelineState | null>;
   autoScrollWhenPlay: React.MutableRefObject<boolean>;
   editorData: any[];
   selectedActionId: string | null;
   onDeleteSelectedClip: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [time, setTime] = useState(0);
@@ -26,6 +34,8 @@ const TimelinePlayer = ({
   const lastUiUpdateAt = useRef(0);
   const lastToggleAt = useRef(0);
   const lastDeleteAt = useRef(0);
+  const lastUndoAt = useRef(0);
+  const lastRedoAt = useRef(0);
 
   const canDelete = Boolean(selectedActionId);
 
@@ -206,6 +216,49 @@ const TimelinePlayer = ({
         {isPlaying ? '||' : '▶'}
       </div>
       <div className="time">{timeRender(time)}</div>
+
+      <div className="history-tools">
+        <button
+          type="button"
+          className="history-tool"
+          disabled={!canUndo}
+          aria-label="Undo"
+          onClick={() => {
+            if (Date.now() - lastUndoAt.current < 450) return;
+            if (!canUndo) return;
+            onUndo();
+          }}
+          onPointerUp={(e) => {
+            if (e.pointerType === 'mouse') return;
+            lastUndoAt.current = Date.now();
+            if (!canUndo) return;
+            onUndo();
+          }}
+        >
+          <img src="/undo.png" alt="" draggable={false} />
+        </button>
+
+        <button
+          type="button"
+          className="history-tool"
+          disabled={!canRedo}
+          aria-label="Redo"
+          onClick={() => {
+            if (Date.now() - lastRedoAt.current < 450) return;
+            if (!canRedo) return;
+            onRedo();
+          }}
+          onPointerUp={(e) => {
+            if (e.pointerType === 'mouse') return;
+            lastRedoAt.current = Date.now();
+            if (!canRedo) return;
+            onRedo();
+          }}
+        >
+          <img src="/redo.png" alt="" draggable={false} />
+        </button>
+      </div>
+
       <div className="rate-control">
         <Select size={'small'} defaultValue={1} style={{ width: 120 }} onChange={handleRateChange}>
           {Rates.map((rate) => (

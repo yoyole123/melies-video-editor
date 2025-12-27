@@ -27,6 +27,8 @@ import {
 
 const defaultEditorData = structuredClone(mockData);
 
+const MAX_HISTORY = 5;
+
 const FootageCard = ({ item, hint, isDragging }: { item: FootageItem; hint: string; isDragging: boolean }) => {
   return (
     <div className={`footage-card${isDragging ? ' is-dragging' : ''}`}>
@@ -78,6 +80,9 @@ const DraggableFootageCard = ({ item, hint }: { item: FootageItem; hint: string 
 const TimelineEditor = () => {
   const [data, setData] = useState<CusTomTimelineRow[]>(defaultEditorData as CusTomTimelineRow[]);
   const [selectedActionId, setSelectedActionId] = useState<string | null>(null);
+  const [past, setPast] = useState<CusTomTimelineRow[][]>([]);
+  const [future, setFuture] = useState<CusTomTimelineRow[][]>([]);
+  const dataRef = useRef<CusTomTimelineRow[]>(data);
   const isMobile = useCoarsePointer();
   const timelineState = useRef<TimelineState | null>(null);
   const playerPanel = useRef<HTMLDivElement | null>(null);
@@ -94,8 +99,43 @@ const TimelineEditor = () => {
     mediaCache.warmFromEditorData(data);
   }, [data]);
 
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
   const uidCounterRef = useRef(0);
   const uid = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `uid-${++uidCounterRef.current}`);
+
+  const pendingHistoryBeforeRef = useRef<CusTomTimelineRow[] | null>(null);
+  const pendingHistorySignatureRef = useRef<string | null>(null);
+
+  /**
+   * Compute a lightweight signature of the timeline data for change detection.
+   * This keeps undo/redo history from recording no-op moves/resizes.
+   */
+  const getTimelineSignature = (rows: CusTomTimelineRow[]) => {
+    return rows
+      .map((row) => {
+        const actionsSig = (row.actions ?? [])
+          .map((action) => `${String(action.id)}@${Number(action.start)}-${Number(action.end)}`)
+          .join('|');
+        return `${String(row.id)}:${actionsSig}`;
+      })
+      .join('||');
+  };
+
+  /**
+   * Push a snapshot into the undo stack (past), clear redo stack (future), and cap to MAX_HISTORY.
+   */
+  const pushHistory = (before: CusTomTimelineRow[]) => {
+    const snapshot = structuredClone(before) as CusTomTimelineRow[];
+    setPast((prev) => {
+      const next = [...prev, snapshot];
+      if (next.length > MAX_HISTORY) next.splice(0, next.length - MAX_HISTORY);
+      return next;
+    });
+    setFuture([]);
+  };
 
   const rangesOverlap = (aStart: number, aEnd: number, bStart: number, bEnd: number) => aStart < bEnd && aEnd > bStart;
 
@@ -113,7 +153,11 @@ const TimelineEditor = () => {
     let start = Math.max(0, at);
     let end = start + duration;
 
+    const state = timelineState.current;
+    if (state?.isPlaying) state.pause();
+
     setData((prev) => {
+      pushHistory(prev);
       const next = structuredClone(prev) as CusTomTimelineRow[];
       // Ensure we have at least 2 rows: [videoRow, audioRow]
       while (next.length < 2) next.push({ id: `${next.length}`, actions: [] } as unknown as CusTomTimelineRow);
@@ -209,6 +253,7 @@ const TimelineEditor = () => {
     if (state?.isPlaying) state.pause();
 
     setData((prev) => {
+      pushHistory(prev);
       const next = prev.map((row) => ({
         ...row,
         actions: (row.actions ?? []).filter((action) => String(action.id) !== selectedActionId),
@@ -217,6 +262,75 @@ const TimelineEditor = () => {
     });
 
     setSelectedActionId(null);
+  };
+
+  /**
+   * Undo the last timeline edit (up to MAX_HISTORY).
+   */
+  const undo = () => {
+    const state = timelineState.current;
+    const currentTime = state?.getTime ? state.getTime() : null;
+    if (state?.isPlaying) state.pause();
+
+    // Clear any in-flight drag/resize capture.
+    pendingHistoryBeforeRef.current = null;
+    pendingHistorySignatureRef.current = null;
+    setSelectedActionId(null);
+
+    setPast((prevPast) => {
+      if (prevPast.length === 0) return prevPast;
+
+      const previous = prevPast[prevPast.length - 1];
+      const currentSnapshot = structuredClone(dataRef.current) as CusTomTimelineRow[];
+
+      setFuture((prevFuture) => [...prevFuture, currentSnapshot]);
+      setData(structuredClone(previous) as CusTomTimelineRow[]);
+
+      return prevPast.slice(0, -1);
+    });
+
+    if (currentTime != null) {
+      requestAnimationFrame(() => {
+        const s = timelineState.current;
+        if (s?.setTime) s.setTime(currentTime);
+      });
+    }
+  };
+
+  /**
+   * Redo the last undone timeline edit.
+   */
+  const redo = () => {
+    const state = timelineState.current;
+    const currentTime = state?.getTime ? state.getTime() : null;
+    if (state?.isPlaying) state.pause();
+
+    pendingHistoryBeforeRef.current = null;
+    pendingHistorySignatureRef.current = null;
+    setSelectedActionId(null);
+
+    setFuture((prevFuture) => {
+      if (prevFuture.length === 0) return prevFuture;
+
+      const next = prevFuture[prevFuture.length - 1];
+      const currentSnapshot = structuredClone(dataRef.current) as CusTomTimelineRow[];
+
+      setPast((prevPast) => {
+        const out = [...prevPast, currentSnapshot];
+        if (out.length > MAX_HISTORY) out.splice(0, out.length - MAX_HISTORY);
+        return out;
+      });
+      setData(structuredClone(next) as CusTomTimelineRow[]);
+
+      return prevFuture.slice(0, -1);
+    });
+
+    if (currentTime != null) {
+      requestAnimationFrame(() => {
+        const s = timelineState.current;
+        if (s?.setTime) s.setTime(currentTime);
+      });
+    }
   };
 
   const sensors = useSensors(
@@ -387,6 +501,10 @@ const TimelineEditor = () => {
           editorData={data}
           selectedActionId={selectedActionId}
           onDeleteSelectedClip={deleteSelectedClip}
+          canUndo={past.length > 0}
+          canRedo={future.length > 0}
+          onUndo={undo}
+          onRedo={redo}
         />
         <div
           className={`timeline-drop${isTimelineOver ? ' is-over' : ''}`}
@@ -422,6 +540,16 @@ const TimelineEditor = () => {
               if (!clickedAction?.id) return;
               setSelectedActionId(String(clickedAction.id));
             }}
+            onActionMoveStart={() => {
+              if (pendingHistoryBeforeRef.current) return;
+              pendingHistoryBeforeRef.current = structuredClone(data) as CusTomTimelineRow[];
+              pendingHistorySignatureRef.current = getTimelineSignature(data);
+            }}
+            onActionResizeStart={() => {
+              if (pendingHistoryBeforeRef.current) return;
+              pendingHistoryBeforeRef.current = structuredClone(data) as CusTomTimelineRow[];
+              pendingHistorySignatureRef.current = getTimelineSignature(data);
+            }}
             onActionMoving={({ action, row, start, end }) => {
             const nextStart = Number(start);
             const nextEnd = Number(end);
@@ -441,7 +569,18 @@ const TimelineEditor = () => {
             if (wouldOverlapInRow(typedRow, String(action.id), nextStart, nextEnd)) return false;
           }}
             onChange={(data) => {
-              setData(cleanEditorData(data as CusTomTimelineRow[]));
+              const nextClean = cleanEditorData(data as CusTomTimelineRow[]);
+              setData(nextClean);
+
+              // If this onChange is the result of a drag/resize gesture, record a single history entry.
+              const pendingBefore = pendingHistoryBeforeRef.current;
+              const pendingSig = pendingHistorySignatureRef.current;
+              if (pendingBefore && pendingSig) {
+                const nextSig = getTimelineSignature(nextClean);
+                if (nextSig !== pendingSig) pushHistory(pendingBefore);
+                pendingHistoryBeforeRef.current = null;
+                pendingHistorySignatureRef.current = null;
+              }
             }}
             getActionRender={(action, row) => {
               if (action.effectId === 'effect0') {
