@@ -265,6 +265,74 @@ const TimelineEditor = () => {
   };
 
   /**
+   * Split the selected action at the current cursor/playhead time.
+   *
+   * Behavior:
+   * - Only splits when the cursor time is strictly inside the clip (start < t < end).
+   * - Pauses playback before applying changes.
+   * - Records a single undo history entry (snapshot before split).
+   * - Keeps the left segment selected by retaining the original action id.
+   */
+  const splitSelectedClipAtCursor = () => {
+    if (!selectedActionId) return;
+
+    const state = timelineState.current;
+    const cursorTimeRaw = state?.getTime ? state.getTime() : null;
+    if (cursorTimeRaw == null) return;
+
+    const cursorTime = Number(cursorTimeRaw);
+    if (!Number.isFinite(cursorTime)) return;
+    if (state?.isPlaying) state.pause();
+
+    // Clear any in-flight drag/resize capture so it can't be committed later.
+    pendingHistoryBeforeRef.current = null;
+    pendingHistorySignatureRef.current = null;
+
+    setData((prev) => {
+      // Find the selected action and validate split is possible.
+      let foundRowIndex = -1;
+      let foundActionIndex = -1;
+      let foundAction: CustomTimelineAction | null = null;
+
+      for (let rowIndex = 0; rowIndex < prev.length; rowIndex++) {
+        const row = prev[rowIndex];
+        const actions = Array.isArray(row?.actions) ? row.actions : [];
+        for (let actionIndex = 0; actionIndex < actions.length; actionIndex++) {
+          const action = actions[actionIndex] as unknown as CustomTimelineAction;
+          if (String(action?.id) !== selectedActionId) continue;
+          foundRowIndex = rowIndex;
+          foundActionIndex = actionIndex;
+          foundAction = action;
+          break;
+        }
+        if (foundAction) break;
+      }
+
+      if (!foundAction) return prev;
+
+      const start = Number(foundAction.start);
+      const end = Number(foundAction.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return prev;
+      if (!(start < cursorTime && cursorTime < end)) return prev;
+
+      pushHistory(prev);
+
+      const rightActionId = `${String(foundAction.id)}-r-${uid()}`;
+      const left: CustomTimelineAction = { ...foundAction, start, end: cursorTime, id: foundAction.id };
+      const right: CustomTimelineAction = { ...foundAction, start: cursorTime, end, id: rightActionId };
+
+      const next = structuredClone(prev) as CusTomTimelineRow[];
+      const nextRow = next[foundRowIndex];
+      const nextActions = Array.isArray(nextRow.actions) ? [...nextRow.actions] : [];
+      nextActions.splice(foundActionIndex, 1, left, right);
+      nextActions.sort((a, b) => Number((a as any).start) - Number((b as any).start));
+      nextRow.actions = nextActions as any;
+
+      return next;
+    });
+  };
+
+  /**
    * Undo the last timeline edit (up to MAX_HISTORY).
    */
   const undo = () => {
@@ -501,6 +569,7 @@ const TimelineEditor = () => {
           editorData={data}
           selectedActionId={selectedActionId}
           onDeleteSelectedClip={deleteSelectedClip}
+          onSplitSelectedClip={splitSelectedClipAtCursor}
           canUndo={past.length > 0}
           canRedo={future.length > 0}
           onUndo={undo}

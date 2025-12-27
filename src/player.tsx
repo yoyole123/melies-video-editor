@@ -13,6 +13,7 @@ const TimelinePlayer = ({
   editorData,
   selectedActionId,
   onDeleteSelectedClip,
+  onSplitSelectedClip,
   canUndo,
   canRedo,
   onUndo,
@@ -23,6 +24,7 @@ const TimelinePlayer = ({
   editorData: any[];
   selectedActionId: string | null;
   onDeleteSelectedClip: () => void;
+  onSplitSelectedClip: () => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -34,10 +36,31 @@ const TimelinePlayer = ({
   const lastUiUpdateAt = useRef(0);
   const lastToggleAt = useRef(0);
   const lastDeleteAt = useRef(0);
+  const lastSplitAt = useRef(0);
   const lastUndoAt = useRef(0);
   const lastRedoAt = useRef(0);
 
   const canDelete = Boolean(selectedActionId);
+
+  const getSelectedActionRange = () => {
+    if (!selectedActionId) return null;
+    const rows = Array.isArray(editorData) ? editorData : [];
+    for (const row of rows) {
+      const actions = (row as any)?.actions;
+      if (!Array.isArray(actions)) continue;
+      for (const action of actions) {
+        if (String((action as any)?.id) !== selectedActionId) continue;
+        const start = Number((action as any)?.start);
+        const end = Number((action as any)?.end);
+        if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+        return { start, end };
+      }
+    }
+    return null;
+  };
+
+  const selectedRange = getSelectedActionRange();
+  const canSplit = Boolean(selectedRange && time > selectedRange.start && time < selectedRange.end);
 
   const isTimeOverVideo = (t: number) => {
     const rows = Array.isArray(editorData) ? editorData : [];
@@ -288,6 +311,26 @@ const TimelinePlayer = ({
           }}
         >
           <img src="/bin.png" alt="" draggable={false} />
+        </button>
+
+        <button
+          type="button"
+          className="clip-tool clip-tool-split"
+          disabled={!canSplit}
+          aria-label="Split selected clip at cursor"
+          onClick={() => {
+            if (Date.now() - lastSplitAt.current < 450) return;
+            if (!canSplit) return;
+            onSplitSelectedClip();
+          }}
+          onPointerUp={(e) => {
+            if (e.pointerType === 'mouse') return;
+            lastSplitAt.current = Date.now();
+            if (!canSplit) return;
+            onSplitSelectedClip();
+          }}
+        >
+          <img src="/split.png" alt="" draggable={false} />
         </button>
       </div>
 
