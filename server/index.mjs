@@ -335,9 +335,7 @@ app.post(
 
       await runFfmpeg(ffmpegArgs, { cwd: tmpDir });
 
-      res.setHeader('Content-Type', 'video/mp4');
-      res.setHeader('Content-Disposition', 'attachment; filename="export.mp4"');
-      res.sendFile(outPath);
+      res.download(outPath, 'export.mp4');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const code = err?.code;

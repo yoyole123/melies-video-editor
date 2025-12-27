@@ -1,5 +1,17 @@
 # React + TypeScript + Vite
 
+## Export (MP4)
+
+This repo includes a simple Express + ffmpeg export server.
+
+- Start the UI: `pnpm dev`
+- Start the export server (separate terminal): `pnpm dev:server`
+- In the UI (bottom bar), click **Export** to download `export.mp4`
+
+Notes:
+- Requires `ffmpeg` to be installed and available on `PATH` (or set `FFMPEG_PATH`).
+- Vite dev server proxies `/export` to `http://localhost:5174` (see `vite.config.ts`).
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:
