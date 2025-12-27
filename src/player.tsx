@@ -19,6 +19,7 @@ const TimelinePlayer = ({
   const [isPlaying, setIsPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const lastUiUpdateAt = useRef(0);
+  const lastToggleAt = useRef(0);
 
   const isTimeOverVideo = (t: number) => {
     const rows = Array.isArray(editorData) ? editorData : [];
@@ -119,9 +120,16 @@ const TimelinePlayer = ({
         className="play-control"
         role="button"
         tabIndex={0}
-        onClick={handlePlayOrPause}
+        onClick={() => {
+          // Mobile browsers often fire a synthetic click after touch.
+          // If we've just handled a touch/pen pointer event, ignore the click.
+          if (Date.now() - lastToggleAt.current < 450) return;
+          handlePlayOrPause();
+        }}
         onPointerUp={(e) => {
-          if (e.pointerType !== 'mouse') handlePlayOrPause();
+          if (e.pointerType === 'mouse') return;
+          lastToggleAt.current = Date.now();
+          handlePlayOrPause();
         }}
       >
         {isPlaying ? '||' : '▶'}
