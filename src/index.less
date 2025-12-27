@@ -192,10 +192,10 @@
   }
 
   .timeline-player {
-    height: 32px;
+    height: 28px;
     width: 100%;
     max-width: 800px;
-    padding: 0 10px;
+    padding: 0 6px;
     display: flex;
     flex-direction: row;
     align-items: center;
@@ -203,32 +203,41 @@
     color: #ddd;
 
     .play-control {
-      width: 24px;
-      height: 24px;
-      border-radius: 4px;
+      width: 18px;
+      height: 18px;
+      border-radius: 3px;
       display: flex;
       background-color: #666;
       justify-content: center;
       align-items: center;
+
+      img {
+        width: 12px;
+        height: 12px;
+        display: block;
+        user-select: none;
+        -webkit-user-select: none;
+        pointer-events: none;
+      }
     }
 
     .time {
-      font-size: 12px;
-      margin: 0 20px;
-      width: 70px;
+      font-size: 11px;
+      margin: 0 8px;
+      width: 58px;
     }
 
     .history-tools {
       display: flex;
       flex-direction: row;
       align-items: center;
-      gap: 6px;
+      gap: 3px;
     }
 
     .history-tool {
-      width: 24px;
-      height: 24px;
-      border-radius: 4px;
+      width: 18px;
+      height: 18px;
+      border-radius: 3px;
       display: flex;
       justify-content: center;
       align-items: center;
@@ -238,8 +247,8 @@
       cursor: pointer;
 
       img {
-        width: 16px;
-        height: 16px;
+        width: 12px;
+        height: 12px;
         display: block;
         user-select: none;
         -webkit-user-select: none;
@@ -256,16 +265,28 @@
       margin-left: auto;
 
       .ant-select {
-        width: 90px !important;
+        width: 72px !important;
   
         .ant-select-selector {
+          height: 18px !important;
+          min-height: 18px !important;
+          padding: 0 6px !important;
           border: none;
           box-shadow: none !important;
           background-color: transparent;
           color: #ddd;
+
+          .ant-select-selection-search {
+            height: 18px !important;
+          }
+
+          .ant-select-selection-search-input {
+            height: 18px !important;
+          }
   
           .ant-select-selection-item {
-            font-size: 12px;
+            line-height: 18px;
+            font-size: 11px;
             display: flex;
             justify-content: center;
           }
@@ -279,17 +300,17 @@
     }
 
     .clip-tools {
-      margin-left: 8px;
+      margin-left: 6px;
       display: flex;
       flex-direction: row;
       align-items: center;
-      gap: 6px;
+      gap: 3px;
     }
 
     .clip-tool {
-      width: 24px;
-      height: 24px;
-      border-radius: 4px;
+      width: 18px;
+      height: 18px;
+      border-radius: 3px;
       display: flex;
       justify-content: center;
       align-items: center;
@@ -299,8 +320,8 @@
       cursor: pointer;
 
       img {
-        width: 16px;
-        height: 16px;
+        width: 12px;
+        height: 12px;
         display: block;
         user-select: none;
         -webkit-user-select: none;
@@ -318,7 +339,7 @@
     }
 
     .export-control {
-      margin-left: 10px;
+      margin-left: 6px;
     }
   }
 
@@ -355,30 +376,35 @@
     }
 
     .timeline-player {
-      height: 44px;
+      height: 28px;
 
       .play-control {
-        width: 36px;
-        height: 36px;
+        width: 20px;
+        height: 20px;
+
+        img {
+          width: 12px;
+          height: 12px;
+        }
       }
 
       .clip-tool {
-        width: 36px;
-        height: 36px;
+        width: 20px;
+        height: 20px;
 
         img {
-          width: 20px;
-          height: 20px;
+          width: 12px;
+          height: 12px;
         }
       }
 
       .history-tool {
-        width: 36px;
-        height: 36px;
+        width: 20px;
+        height: 20px;
 
         img {
-          width: 20px;
-          height: 20px;
+          width: 12px;
+          height: 12px;
         }
       }
     }

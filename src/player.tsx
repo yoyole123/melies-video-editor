@@ -227,6 +227,7 @@ const TimelinePlayer = ({
         className="play-control"
         role="button"
         tabIndex={0}
+        aria-label={isPlaying ? 'Pause' : 'Play'}
         onClick={() => {
           // Mobile browsers often fire a synthetic click after touch.
           // If we've just handled a touch/pen pointer event, ignore the click.
@@ -239,7 +240,11 @@ const TimelinePlayer = ({
           handlePlayOrPause();
         }}
       >
-        {isPlaying ? '||' : '▶'}
+        <img
+          src={isPlaying ? '/pause-button.png' : '/play-button.png'}
+          alt=""
+          draggable={false}
+        />
       </div>
       <div className="time">{timeRender(time)}</div>
 
