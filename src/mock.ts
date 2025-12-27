@@ -9,6 +9,7 @@ export const startLeft = 20;
 export interface CustomTimelineAction extends TimelineAction {
   data: {
     src: string;
+    previewSrc?: string;
     name: string;
   };
 }
@@ -25,22 +26,22 @@ export const mockEffect: Record<string, TimelineEffect> = {
       start: ({ action, engine, isPlaying, time }) => {
         if (isPlaying) {
           const src = (action as CustomTimelineAction).data.src;
-          audioControl.start({ id: src, src, startTime: action.start, engine, time });
+          audioControl.warm(src);
+          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time });
         }
       },
       enter: ({ action, engine, isPlaying, time }) => {
         if (isPlaying) {
           const src = (action as CustomTimelineAction).data.src;
-          audioControl.start({ id: src, src, startTime: action.start, engine, time });
+          audioControl.warm(src);
+          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time });
         }
       },
-      leave: ({ action, engine }) => {
-        const src = (action as CustomTimelineAction).data.src;
-        audioControl.stop({ id: src, engine });
+      leave: ({ action }) => {
+        audioControl.stop({ actionId: action.id });
       },
-      stop: ({ action, engine }) => {
-        const src = (action as CustomTimelineAction).data.src;
-        audioControl.stop({ id: src, engine });
+      stop: ({ action }) => {
+        audioControl.stop({ actionId: action.id });
       },
     },
   },
@@ -49,30 +50,51 @@ export const mockEffect: Record<string, TimelineEffect> = {
     name: '播放视频',
     source: {
       start: ({ action, engine, isPlaying, time }) => {
-        const src = (action as CustomTimelineAction).data?.src;
-        if (src) videoControl.setSource(src);
+        const { src, previewSrc } = (action as CustomTimelineAction).data ?? ({} as any);
+        const chosen = previewSrc || src;
+        if (chosen) {
+          videoControl.warm(chosen);
+          videoControl.setSource(chosen);
+        }
         videoControl.setRate(engine.getPlayRate());
-        videoControl.seek(Math.max(0, time - action.start));
-        if (isPlaying) videoControl.play();
+        videoControl.seek(Math.max(0, time - action.start), { force: true });
+        if (isPlaying) {
+          videoControl.bindEngine(engine, action.start);
+          videoControl.play();
+        }
       },
       enter: ({ action, engine, isPlaying, time }) => {
-        const src = (action as CustomTimelineAction).data?.src;
-        if (src) videoControl.setSource(src);
+        const { src, previewSrc } = (action as CustomTimelineAction).data ?? ({} as any);
+        const chosen = previewSrc || src;
+        if (chosen) {
+          videoControl.warm(chosen);
+          videoControl.setSource(chosen);
+        }
         videoControl.setRate(engine.getPlayRate());
-        videoControl.seek(Math.max(0, time - action.start));
-        if (isPlaying) videoControl.play();
+        videoControl.seek(Math.max(0, time - action.start), { force: true });
+        if (isPlaying) {
+          videoControl.bindEngine(engine, action.start);
+          videoControl.play();
+        }
       },
-      update: ({ action, engine, time }) => {
-        const src = (action as CustomTimelineAction).data?.src;
-        if (src) videoControl.setSource(src);
+      update: ({ action, engine, time, isPlaying }) => {
+        const { src, previewSrc } = (action as CustomTimelineAction).data ?? ({} as any);
+        const chosen = previewSrc || src;
+        if (chosen) videoControl.setSource(chosen);
         videoControl.setRate(engine.getPlayRate());
-        videoControl.seek(Math.max(0, time - action.start));
+        // Smooth preview: NEVER seek while playing (seeks cause buffering).
+        // When paused/scrubbing, we force seek to show the correct frame.
+        if (!isPlaying) {
+          videoControl.seek(Math.max(0, time - action.start), { force: true });
+        }
       },
       leave: () => {
         videoControl.pause();
+        videoControl.unbindEngine();
       },
       stop: () => {
         videoControl.pause();
+        videoControl.unbindEngine();
       },
     },
   },

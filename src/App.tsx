@@ -1,7 +1,6 @@
 import { Timeline } from '@xzdarcy/react-timeline-editor';
 import type { TimelineState } from '@xzdarcy/react-timeline-editor';
-import { Switch } from 'antd';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CustomRender0, CustomRender1 } from './custom';
 import './index.less';
 import { mockData, mockEffect, scale, scaleWidth, startLeft } from './mock';
@@ -9,6 +8,7 @@ import type { CustomTimelineAction, CusTomTimelineRow } from './mock';
 import { FOOTAGE_BIN } from './footageBin';
 import TimelinePlayer from './player';
 import videoControl from './videoControl';
+import mediaCache from './mediaCache';
 
 const defaultEditorData = structuredClone(mockData);
 
@@ -19,9 +19,15 @@ const TimelineEditor = () => {
   const timelineWrapRef = useRef<HTMLDivElement | null>(null);
   const autoScrollWhenPlay = useRef<boolean>(true);
 
+  // Preload media referenced by timeline actions to reduce buffering/stalls during playback.
+  // This is intentionally fire-and-forget; cache dedupes across edits.
+  useEffect(() => {
+    mediaCache.warmFromEditorData(data);
+  }, [data]);
+
   const uid = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}`);
 
-  const insertActionAtTime = (item: { kind: 'video' | 'audio'; src: string; name: string; defaultDuration?: number }, at: number) => {
+  const insertActionAtTime = (item: { kind: 'video' | 'audio'; src: string; previewSrc?: string; name: string; defaultDuration?: number }, at: number) => {
     const duration = item.defaultDuration ?? 10;
     const start = Math.max(0, at);
     const end = start + duration;
@@ -38,7 +44,7 @@ const TimelineEditor = () => {
           start,
           end,
           effectId: item.kind === 'video' ? 'effect1' : 'effect0',
-          data: { src: item.src, name: item.name },
+          data: { src: item.src, previewSrc: item.previewSrc, name: item.name },
         } as CustomTimelineAction,
       ];
       return next;
@@ -104,7 +110,7 @@ const TimelineEditor = () => {
       <div className="player-panel" ref={playerPanel}>
         <video
           className="player-video"
-          src={data?.[0]?.actions?.[0]?.data?.src}
+          src={data?.[0]?.actions?.[0]?.data?.previewSrc ?? data?.[0]?.actions?.[0]?.data?.src}
           preload="auto"
           playsInline
           controls={false}

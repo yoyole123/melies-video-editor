@@ -3,6 +3,8 @@ export type FootageItem = {
   kind: 'video' | 'audio';
   name: string;
   src: string;
+  /** Optional lower-res/proxy source for smooth preview playback. */
+  previewSrc?: string;
   defaultDuration?: number;
 };
 

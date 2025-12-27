@@ -1,6 +1,6 @@
 import type { TimelineState } from '@xzdarcy/react-timeline-editor';
 import { Select } from 'antd';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { scale, scaleWidth, startLeft } from './mock';
 
 const { Option } = Select;
@@ -15,6 +15,7 @@ const TimelinePlayer = ({
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [time, setTime] = useState(0);
+  const lastUiUpdateAt = useRef(0);
 
   useEffect(() => {
     if (!timelineState.current) return;
@@ -23,6 +24,11 @@ const TimelinePlayer = ({
     engine.listener.on('paused', () => setIsPlaying(false));
     engine.listener.on('afterSetTime', ({ time }) => setTime(time));
     engine.listener.on('setTimeByTick', ({ time }) => {
+      const now = performance.now();
+      // Limit UI work to ~30fps during playback.
+      if (now - lastUiUpdateAt.current < 33) return;
+      lastUiUpdateAt.current = now;
+
       setTime(time);
 
       if (autoScrollWhenPlay.current) {
