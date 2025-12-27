@@ -100,20 +100,19 @@ const TimelineEditor = () => {
             </div>
           ))}
         </div>
-        <Switch
-          checkedChildren="开启运行时自动滚动"
-          unCheckedChildren="禁用运行时自动滚动"
-          defaultChecked={autoScrollWhenPlay.current}
-          onChange={(e) => (autoScrollWhenPlay.current = e)}
-          style={{ marginBottom: 20 }}
-        />
       </div>
       <div className="player-panel" ref={playerPanel}>
         <video
           className="player-video"
           src={data?.[0]?.actions?.[0]?.data?.src}
-          controls
           preload="auto"
+          playsInline
+          controls={false}
+          disablePictureInPicture
+          disableRemotePlayback
+          controlsList="nodownload noplaybackrate noremoteplayback"
+          tabIndex={-1}
+          onContextMenu={(e) => e.preventDefault()}
           ref={(el) => videoControl.attach(el)}
         />
       </div>

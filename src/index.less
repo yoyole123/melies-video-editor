@@ -72,6 +72,15 @@
       display: block;
       object-fit: contain;
       background: #000;
+      pointer-events: none;
+
+      &::-webkit-media-controls,
+      &::-webkit-media-controls-enclosure,
+      &::-webkit-media-controls-panel,
+      &::-webkit-media-controls-overlay-play-button {
+        display: none !important;
+        -webkit-appearance: none;
+      }
     }
   }
 
