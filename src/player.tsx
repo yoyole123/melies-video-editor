@@ -11,16 +11,23 @@ const TimelinePlayer = ({
   timelineState,
   autoScrollWhenPlay,
   editorData,
+  selectedActionId,
+  onDeleteSelectedClip,
 }: {
   timelineState: React.MutableRefObject<TimelineState | null>;
   autoScrollWhenPlay: React.MutableRefObject<boolean>;
   editorData: any[];
+  selectedActionId: string | null;
+  onDeleteSelectedClip: () => void;
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const lastUiUpdateAt = useRef(0);
   const lastToggleAt = useRef(0);
+  const lastDeleteAt = useRef(0);
+
+  const canDelete = Boolean(selectedActionId);
 
   const isTimeOverVideo = (t: number) => {
     const rows = Array.isArray(editorData) ? editorData : [];
@@ -205,6 +212,30 @@ const TimelinePlayer = ({
             <Option key={rate} value={rate}>{`${rate.toFixed(1)}x`}</Option>
           ))}
         </Select>
+      </div>
+
+      <div className="clip-tools">
+        <button
+          type="button"
+          className="clip-tool clip-tool-delete"
+          disabled={!canDelete}
+          aria-label="Delete selected clip"
+          onClick={() => {
+            // Mobile browsers often fire a synthetic click after touch.
+            // If we've just handled a touch/pen pointer event, ignore the click.
+            if (Date.now() - lastDeleteAt.current < 450) return;
+            if (!canDelete) return;
+            onDeleteSelectedClip();
+          }}
+          onPointerUp={(e) => {
+            if (e.pointerType === 'mouse') return;
+            lastDeleteAt.current = Date.now();
+            if (!canDelete) return;
+            onDeleteSelectedClip();
+          }}
+        >
+          <img src="/bin.png" alt="" draggable={false} />
+        </button>
       </div>
 
       <div className="export-control">

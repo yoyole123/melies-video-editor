@@ -194,6 +194,31 @@ const TimelineEditor = () => {
     });
   }, [data, selectedActionId]);
 
+  /**
+   * Delete the currently selected action from the timeline.
+   *
+   * Notes:
+   * - Operates on the canonical (clean) editor data.
+   * - Clears selection after deletion.
+   * - If playback is active, pauses first (to avoid transient audio/video glitches).
+   */
+  const deleteSelectedClip = () => {
+    if (!selectedActionId) return;
+
+    const state = timelineState.current;
+    if (state?.isPlaying) state.pause();
+
+    setData((prev) => {
+      const next = prev.map((row) => ({
+        ...row,
+        actions: (row.actions ?? []).filter((action) => String(action.id) !== selectedActionId),
+      }));
+      return next;
+    });
+
+    setSelectedActionId(null);
+  };
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     // On touch, require a short press-hold before starting drag, so scroll is still possible.
@@ -316,7 +341,8 @@ const TimelineEditor = () => {
 
     const t = timeFromClientX(e.clientX);
 
-    // Otherwise, releasing on empty space just sets the playhead time.
+    // Otherwise, releasing on empty space deselects and sets the playhead time.
+    setSelectedActionId(null);
     if (timelineState.current) timelineState.current.setTime(t);
   };
 
@@ -355,7 +381,13 @@ const TimelineEditor = () => {
             ref={(el) => videoControl.attach(el)}
           />
         </div>
-        <TimelinePlayer timelineState={timelineState} autoScrollWhenPlay={autoScrollWhenPlay} editorData={data} />
+        <TimelinePlayer
+          timelineState={timelineState}
+          autoScrollWhenPlay={autoScrollWhenPlay}
+          editorData={data}
+          selectedActionId={selectedActionId}
+          onDeleteSelectedClip={deleteSelectedClip}
+        />
         <div
           className={`timeline-drop${isTimelineOver ? ' is-over' : ''}`}
           ref={(node) => {
@@ -375,6 +407,16 @@ const TimelineEditor = () => {
             ref={timelineState}
             editorData={editorDataForRender}
             effects={mockEffect}
+            onClickTimeArea={(_time, _e) => {
+              setSelectedActionId(null);
+              return undefined;
+            }}
+            onClickRow={(e) => {
+              const target = e.target as HTMLElement | null;
+              // If the click originated from an action, don't let the row click clear selection.
+              if (target?.closest?.('.timeline-editor-action')) return;
+              setSelectedActionId(null);
+            }}
             onClickActionOnly={(_e, { action }) => {
               const clickedAction = action as unknown as CustomTimelineAction;
               if (!clickedAction?.id) return;
