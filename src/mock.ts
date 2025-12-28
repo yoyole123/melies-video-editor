@@ -50,6 +50,32 @@ export const mockEffect: Record<string, TimelineEffect> = {
       },
     },
   },
+  effect2: {
+    id: 'effect2',
+    name: 'Play video audio',
+    source: {
+      start: ({ action, engine, isPlaying, time }) => {
+        if (isPlaying) {
+          const { src, offset } = (action as CustomTimelineAction).data;
+          audioControl.warm(src);
+          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time, offset });
+        }
+      },
+      enter: ({ action, engine, isPlaying, time }) => {
+        if (isPlaying) {
+          const { src, offset } = (action as CustomTimelineAction).data;
+          audioControl.warm(src);
+          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time, offset });
+        }
+      },
+      leave: ({ action }) => {
+        audioControl.stop({ actionId: action.id });
+      },
+      stop: ({ action }) => {
+        audioControl.stop({ actionId: action.id });
+      },
+    },
+  },
   effect1: {
     id: 'effect1',
     name: 'Play video',
@@ -129,6 +155,21 @@ export const mockData: CusTomTimelineRow[] = [
   },
   {
     id: '1',
+    actions: [
+      {
+        id: 'action0-audio',
+        start: 0,
+        end: 10,
+        effectId: 'effect2',
+        data: {
+          src: '/footage/Big_Buck_Bunny_720_10s_5MB.mp4',
+          name: 'Big Buck Bunny (10s)',
+        },
+      },
+    ],
+  },
+  {
+    id: '2',
     actions: [
       {
         id: 'action1',

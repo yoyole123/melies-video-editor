@@ -1,7 +1,7 @@
 import { Timeline } from '@xzdarcy/react-timeline-editor';
 import type { TimelineState } from '@xzdarcy/react-timeline-editor';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CustomRender0, CustomRender1 } from './custom';
+import { CustomRender0, CustomRender1, CustomRender2 } from './custom';
 import './index.less';
 import { mockData, mockEffect, scale, scaleWidth, startLeft } from './mock';
 import type { CustomTimelineAction, CusTomTimelineRow } from './mock';
@@ -159,32 +159,77 @@ const TimelineEditor = () => {
     setData((prev) => {
       pushHistory(prev);
       const next = structuredClone(prev) as CusTomTimelineRow[];
-      // Ensure we have at least 2 rows: [videoRow, audioRow]
-      while (next.length < 2) next.push({ id: `${next.length}`, actions: [] } as unknown as CusTomTimelineRow);
-      const rowIndex = item.kind === 'video' ? 0 : 1;
 
-      // Do not allow overlaps in the row: bump forward until we find a free slot.
-      const existing = Array.isArray(next[rowIndex].actions) ? next[rowIndex].actions : [];
-      const sorted = [...existing].sort((a, b) => Number(a.start) - Number(b.start));
-      for (const other of sorted) {
-        const otherStart = Number(other.start);
-        const otherEnd = Number(other.end);
-        if (!Number.isFinite(otherStart) || !Number.isFinite(otherEnd)) continue;
-        if (!rangesOverlap(start, end, otherStart, otherEnd)) continue;
-        start = otherEnd;
-        end = start + duration;
+      // Ensure we have at least 3 rows:
+      // 0: video
+      // 1: embedded video audio
+      // 2: external audio
+      while (next.length < 3) next.push({ id: `${next.length}`, actions: [] } as unknown as CusTomTimelineRow);
+
+      const bumpStartToAvoidOverlaps = (rowIndexes: number[]) => {
+        const intervals: Array<{ start: number; end: number }> = [];
+        for (const idx of rowIndexes) {
+          const actions = Array.isArray(next[idx]?.actions) ? next[idx].actions : [];
+          for (const a of actions) {
+            const s = Number((a as any)?.start);
+            const e = Number((a as any)?.end);
+            if (!Number.isFinite(s) || !Number.isFinite(e)) continue;
+            intervals.push({ start: s, end: e });
+          }
+        }
+        intervals.sort((a, b) => a.start - b.start);
+
+        // Bump forward until [start,end] doesn't overlap any interval.
+        for (const other of intervals) {
+          if (!rangesOverlap(start, end, other.start, other.end)) continue;
+          start = other.end;
+          end = start + duration;
+        }
+      };
+
+      if (item.kind === 'video') {
+        // Find a slot that is free in BOTH video row and video-audio row.
+        bumpStartToAvoidOverlaps([0, 1]);
+
+        const clipId = `video-${uid()}`;
+        const audioId = `video-audio-${uid()}`;
+
+        next[0].actions = [
+          ...(next[0].actions ?? []),
+          {
+            id: clipId,
+            start,
+            end,
+            effectId: 'effect1',
+            data: { src: item.src, previewSrc: item.previewSrc, name: item.name },
+          } as CustomTimelineAction,
+        ];
+
+        next[1].actions = [
+          ...(next[1].actions ?? []),
+          {
+            id: audioId,
+            start,
+            end,
+            effectId: 'effect2',
+            data: { src: item.src, name: item.name },
+          } as CustomTimelineAction,
+        ];
+      } else {
+        // External audio: only needs a free slot in the external-audio row.
+        bumpStartToAvoidOverlaps([2]);
+        next[2].actions = [
+          ...(next[2].actions ?? []),
+          {
+            id: `audio-${uid()}`,
+            start,
+            end,
+            effectId: 'effect0',
+            data: { src: item.src, name: item.name },
+          } as CustomTimelineAction,
+        ];
       }
 
-      next[rowIndex].actions = [
-        ...(next[rowIndex].actions ?? []),
-        {
-          id: `${item.kind}-${uid()}`,
-          start,
-          end,
-          effectId: item.kind === 'video' ? 'effect1' : 'effect0',
-          data: { src: item.src, previewSrc: item.previewSrc, name: item.name },
-        } as CustomTimelineAction,
-      ];
       return next;
     });
   };
@@ -571,6 +616,7 @@ const TimelineEditor = () => {
             className="player-video"
             preload="auto"
             playsInline
+            muted
             controls={false}
             disablePictureInPicture
             disableRemotePlayback
@@ -671,6 +717,8 @@ const TimelineEditor = () => {
             getActionRender={(action, row) => {
               if (action.effectId === 'effect0') {
                 return <CustomRender0 action={action as CustomTimelineAction} row={row as CusTomTimelineRow} />;
+              } else if (action.effectId === 'effect2') {
+                return <CustomRender2 action={action as CustomTimelineAction} row={row as CusTomTimelineRow} />;
               } else if (action.effectId === 'effect1') {
                 return <CustomRender1 action={action as CustomTimelineAction} row={row as CusTomTimelineRow} />;
               }

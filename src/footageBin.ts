@@ -32,6 +32,13 @@ export const FOOTAGE_BIN: FootageItem[] = [
     src: '/footage/file_example_MP3_700KB.mp3',
     defaultDuration: 10,
   },
+  {
+    id: 'braveheart',
+    kind: 'video',
+    name: 'Braveheart (≈13s)',
+    src: '/footage/braveheart.mp4',
+    defaultDuration: 10,
+  }
 ];
 
 export const VIDEO_ITEMS = FOOTAGE_BIN.filter((x) => x.kind === 'video');

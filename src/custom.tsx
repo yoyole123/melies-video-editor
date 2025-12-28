@@ -16,3 +16,11 @@ export const CustomRender1: FC<{ action: CustomTimelineAction; row: CusTomTimeli
     </div>
   );
 };
+
+export const CustomRender2: FC<{ action: CustomTimelineAction; row: CusTomTimelineRow }> = ({ action, row }) => {
+  return (
+    <div className={'effect2'} data-action-id={action.id} data-row-id={row.id}>
+      <div className={`effect2-text`}>{`Video audio: ${action.data.name}`}</div>
+    </div>
+  );
+};

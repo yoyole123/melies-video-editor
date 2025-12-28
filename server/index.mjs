@@ -39,7 +39,7 @@ function clampNonNegativeNumber(value) {
 
 function buildSegments(editorData, kind) {
   // kind: 'video' | 'audio'
-  const effectId = kind === 'video' ? 'effect1' : 'effect0';
+  const effectIds = kind === 'video' ? ['effect1'] : ['effect0', 'effect2'];
   const actions = [];
   const rows = Array.isArray(editorData) ? editorData : [];
   for (const row of rows) {
@@ -47,7 +47,7 @@ function buildSegments(editorData, kind) {
     if (!Array.isArray(rowActions)) continue;
     for (const action of rowActions) {
       if (!action) continue;
-      if (String(action.effectId) !== effectId) continue;
+      if (!effectIds.includes(String(action.effectId))) continue;
       const start = clampNonNegativeNumber(action.start);
       const end = clampNonNegativeNumber(action.end);
       const src = action?.data?.src;
@@ -70,6 +70,27 @@ function buildSegments(editorData, kind) {
     t = Math.max(t, end);
   }
   return { segments, actions };
+}
+
+function collectActions(editorData, effectIds) {
+  const actions = [];
+  const rows = Array.isArray(editorData) ? editorData : [];
+  for (const row of rows) {
+    const rowActions = row?.actions;
+    if (!Array.isArray(rowActions)) continue;
+    for (const action of rowActions) {
+      if (!action) continue;
+      if (!effectIds.includes(String(action.effectId))) continue;
+      const start = clampNonNegativeNumber(action.start);
+      const end = clampNonNegativeNumber(action.end);
+      const src = action?.data?.src;
+      if (!src) continue;
+      if (end <= start) continue;
+      actions.push({ start, end, src: String(src) });
+    }
+  }
+  actions.sort((a, b) => a.start - b.start);
+  return actions;
 }
 
 function getTotalDuration(editorData) {
@@ -100,23 +121,22 @@ function uniqueStrings(items) {
 
 function buildFfmpegArgs({ editorData, assetsBySrc, outPath }) {
   const totalDuration = getTotalDuration(editorData);
+  const safeTotalDuration = totalDuration > 0 ? totalDuration : 0.04;
 
   const videoPlan = buildSegments(editorData, 'video');
-  const audioPlan = buildSegments(editorData, 'audio');
+  // Audio is handled via mixing (supports overlaps / multiple layers).
+  const audioActions = collectActions(editorData, ['effect0', 'effect2']);
 
   // If there are no video actions, generate a black video for the full duration.
   const videoSegments = videoPlan.segments.length ? [...videoPlan.segments] : [{ type: 'gap', duration: totalDuration }];
-  const audioSegments = [...audioPlan.segments];
 
   // Add trailing gaps to reach total duration.
   const sumDur = (segs) => segs.reduce((acc, s) => acc + (Number(s.duration) || 0), 0);
   const vSum = sumDur(videoSegments);
-  const aSum = sumDur(audioSegments);
   if (totalDuration > vSum) videoSegments.push({ type: 'gap', duration: totalDuration - vSum });
-  if (totalDuration > aSum && audioSegments.length) audioSegments.push({ type: 'gap', duration: totalDuration - aSum });
 
   const videoSrcs = uniqueStrings(videoSegments.filter((s) => s.type === 'clip').map((s) => s.src));
-  const audioSrcs = uniqueStrings(audioSegments.filter((s) => s.type === 'clip').map((s) => s.src));
+  const audioSrcs = uniqueStrings(audioActions.map((a) => a.src));
 
   for (const src of [...videoSrcs, ...audioSrcs]) {
     if (!assetsBySrc.get(src)) {
@@ -180,34 +200,36 @@ function buildFfmpegArgs({ editorData, assetsBySrc, outPath }) {
 
   filters.push(`${vLabels.join('')}concat=n=${vLabels.length}:v=1:a=0[vout]`);
 
-  // Audio segments (optional)
+  // Audio actions (optional): mix overlapping clips across both audio layers.
+  // Each action becomes a trimmed clip delayed to its start time, then everything is `amix`'d together.
   const aLabels = [];
-  if (audioSegments.length) {
-    for (let i = 0; i < audioSegments.length; i++) {
-      const seg = audioSegments[i];
-      const dur = Number(seg.duration);
-      if (!Number.isFinite(dur) || dur <= 0) continue;
+  if (audioActions.length) {
+    // Base silence to guarantee output length.
+    filters.push(`anullsrc=r=${TARGET_AUDIO_RATE}:cl=stereo:d=${safeTotalDuration}[abase]`);
 
-      const label = `aseg${aLabels.length}`;
-      if (seg.type === 'gap') {
-        filters.push(`anullsrc=r=${TARGET_AUDIO_RATE}:cl=stereo:d=${dur}[${label}]`);
-      } else {
-        const idx = inputIndexBySrc.get(seg.src);
-        filters.push(
-          `[${idx}:a]atrim=start=0:duration=${dur},asetpts=PTS-STARTPTS,aresample=${TARGET_AUDIO_RATE}:async=1[${label}]`
-        );
-      }
+    for (const action of audioActions) {
+      const dur = Number(action.end) - Number(action.start);
+      if (!Number.isFinite(dur) || dur <= 0) continue;
+      const idx = inputIndexBySrc.get(action.src);
+      const delayMs = Math.max(0, Math.round(Number(action.start) * 1000));
+      const label = `am${aLabels.length}`;
+      filters.push(
+        `[${idx}:a]atrim=start=0:duration=${dur},asetpts=PTS-STARTPTS,` +
+          `aresample=${TARGET_AUDIO_RATE}:async=1,adelay=${delayMs}|${delayMs}[${label}]`
+      );
       aLabels.push(`[${label}]`);
     }
 
-    if (aLabels.length) {
-      filters.push(`${aLabels.join('')}concat=n=${aLabels.length}:v=0:a=1[aout]`);
-    }
+    const mixInputs = ['[abase]', ...aLabels];
+    filters.push(
+      `${mixInputs.join('')}amix=inputs=${mixInputs.length}:normalize=0:duration=longest,` +
+        `atrim=0:${safeTotalDuration},asetpts=PTS-STARTPTS[aout]`
+    );
   }
 
   args.push('-filter_complex', filters.join(';'));
   args.push('-map', '[vout]');
-  if (aLabels.length) {
+  if (audioActions.length && aLabels.length) {
     args.push('-map', '[aout]');
   } else {
     args.push('-an');
