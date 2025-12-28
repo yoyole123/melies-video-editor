@@ -11,6 +11,8 @@ export interface CustomTimelineAction extends TimelineAction {
     src: string;
     previewSrc?: string;
     name: string;
+    /** Shared id for clips that should move/trim together (e.g. video + its embedded audio). */
+    linkId?: string;
     /**
      * In-point offset into the underlying media (seconds).
      * Used for split clips so the right segment continues from the correct time.

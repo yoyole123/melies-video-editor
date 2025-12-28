@@ -108,6 +108,7 @@ const TimelineEditor = () => {
 
   const pendingHistoryBeforeRef = useRef<CusTomTimelineRow[] | null>(null);
   const pendingHistorySignatureRef = useRef<string | null>(null);
+  const pendingGestureActionIdRef = useRef<string | null>(null);
 
   /**
    * Compute a lightweight signature of the timeline data for change detection.
@@ -146,6 +147,86 @@ const TimelineEditor = () => {
       if (rangesOverlap(nextStart, nextEnd, Number(other.start), Number(other.end))) return true;
     }
     return false;
+  };
+
+  const findActionById = (rows: CusTomTimelineRow[], actionId: string) => {
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+      const row = rows[rowIndex];
+      const actions = Array.isArray(row?.actions) ? row.actions : [];
+      for (let actionIndex = 0; actionIndex < actions.length; actionIndex++) {
+        const action = actions[actionIndex] as unknown as CustomTimelineAction;
+        if (String(action?.id) !== actionId) continue;
+        return { rowIndex, actionIndex, action };
+      }
+    }
+    return null;
+  };
+
+  const findLinkedPartner = (rows: CusTomTimelineRow[], actionId: string) => {
+    const found = findActionById(rows, actionId);
+    const linkId = found?.action?.data?.linkId;
+    if (!found || !linkId) return null;
+
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+      const row = rows[rowIndex];
+      const actions = Array.isArray(row?.actions) ? row.actions : [];
+      for (let actionIndex = 0; actionIndex < actions.length; actionIndex++) {
+        const action = actions[actionIndex] as unknown as CustomTimelineAction;
+        if (!action?.data?.linkId) continue;
+        if (String(action.data.linkId) !== String(linkId)) continue;
+        if (String(action.id) === String(actionId)) continue;
+        return { rowIndex, actionIndex, action };
+      }
+    }
+    return null;
+  };
+
+  const applyLinkedStartEnd = (rows: CusTomTimelineRow[], sourceActionId: string) => {
+    const source = findActionById(rows, sourceActionId);
+    if (!source) return rows;
+    const partner = findLinkedPartner(rows, sourceActionId);
+    if (!partner) return rows;
+
+    const nextStart = Number(source.action.start);
+    const nextEnd = Number(source.action.end);
+    if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd) || nextEnd <= nextStart) return rows;
+    if (Number(partner.action.start) === nextStart && Number(partner.action.end) === nextEnd) return rows;
+
+    const next = structuredClone(rows) as CusTomTimelineRow[];
+    const partnerRow = next[partner.rowIndex];
+    const actions = Array.isArray(partnerRow.actions) ? [...partnerRow.actions] : [];
+    const updated: CustomTimelineAction = { ...(actions[partner.actionIndex] as any), start: nextStart, end: nextEnd };
+    actions.splice(partner.actionIndex, 1, updated as any);
+    partnerRow.actions = actions as any;
+    return next;
+  };
+
+  const setStartEndForActionAndLinked = (rows: CusTomTimelineRow[], sourceActionId: string, nextStart: number, nextEnd: number) => {
+    if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd) || nextEnd <= nextStart) return rows;
+
+    const source = findActionById(rows, sourceActionId);
+    if (!source) return rows;
+
+    const partner = findLinkedPartner(rows, sourceActionId);
+
+    // Fast path: if not linked, don't force state updates (let the library handle visuals).
+    if (!partner) return rows;
+
+    const next = structuredClone(rows) as CusTomTimelineRow[];
+
+    const sourceRow = next[source.rowIndex];
+    const sourceActions = Array.isArray(sourceRow.actions) ? [...sourceRow.actions] : [];
+    const updatedSource: CustomTimelineAction = { ...(sourceActions[source.actionIndex] as any), start: nextStart, end: nextEnd };
+    sourceActions.splice(source.actionIndex, 1, updatedSource as any);
+    sourceRow.actions = sourceActions as any;
+
+    const partnerRow = next[partner.rowIndex];
+    const partnerActions = Array.isArray(partnerRow.actions) ? [...partnerRow.actions] : [];
+    const updatedPartner: CustomTimelineAction = { ...(partnerActions[partner.actionIndex] as any), start: nextStart, end: nextEnd };
+    partnerActions.splice(partner.actionIndex, 1, updatedPartner as any);
+    partnerRow.actions = partnerActions as any;
+
+    return next;
   };
 
   const insertActionAtTime = (item: { kind: 'video' | 'audio'; src: string; previewSrc?: string; name: string; defaultDuration?: number }, at: number) => {
@@ -191,6 +272,7 @@ const TimelineEditor = () => {
         // Find a slot that is free in BOTH video row and video-audio row.
         bumpStartToAvoidOverlaps([0, 1]);
 
+        const linkId = `link-${uid()}`;
         const clipId = `video-${uid()}`;
         const audioId = `video-audio-${uid()}`;
 
@@ -201,7 +283,7 @@ const TimelineEditor = () => {
             start,
             end,
             effectId: 'effect1',
-            data: { src: item.src, previewSrc: item.previewSrc, name: item.name },
+            data: { src: item.src, previewSrc: item.previewSrc, name: item.name, linkId },
           } as CustomTimelineAction,
         ];
 
@@ -212,7 +294,7 @@ const TimelineEditor = () => {
             start,
             end,
             effectId: 'effect2',
-            data: { src: item.src, name: item.name },
+            data: { src: item.src, name: item.name, linkId },
           } as CustomTimelineAction,
         ];
       } else {
@@ -299,9 +381,27 @@ const TimelineEditor = () => {
 
     setData((prev) => {
       pushHistory(prev);
+
+      // If this is a linked clip (video <-> embedded audio), delete the whole linked pair.
+      let linkId: string | null = null;
+      for (const row of prev) {
+        const actions = Array.isArray(row?.actions) ? row.actions : [];
+        for (const action of actions) {
+          if (String((action as any)?.id) !== selectedActionId) continue;
+          const candidate = (action as any)?.data?.linkId;
+          if (candidate != null) linkId = String(candidate);
+          break;
+        }
+        if (linkId != null) break;
+      }
+
       const next = prev.map((row) => ({
         ...row,
-        actions: (row.actions ?? []).filter((action) => String(action.id) !== selectedActionId),
+        actions: (row.actions ?? []).filter((action) => {
+          if (String((action as any)?.id) === selectedActionId) return false;
+          if (linkId && String((action as any)?.data?.linkId ?? '') === linkId) return false;
+          return true;
+        }),
       }));
       return next;
     });
@@ -355,12 +455,39 @@ const TimelineEditor = () => {
 
       if (!foundAction) return prev;
 
+      // If this is a linked clip (video <-> embedded audio), we split BOTH so the link stays intact.
+      const foundLinkId = (foundAction as any)?.data?.linkId ? String((foundAction as any).data.linkId) : null;
+      let partnerRowIndex = -1;
+      let partnerActionIndex = -1;
+      let partnerAction: CustomTimelineAction | null = null;
+
+      if (foundLinkId) {
+        for (let rowIndex = 0; rowIndex < prev.length; rowIndex++) {
+          const row = prev[rowIndex];
+          const actions = Array.isArray(row?.actions) ? row.actions : [];
+          for (let actionIndex = 0; actionIndex < actions.length; actionIndex++) {
+            const action = actions[actionIndex] as unknown as CustomTimelineAction;
+            if (String(action?.id) === selectedActionId) continue;
+            if (String((action as any)?.data?.linkId ?? '') !== foundLinkId) continue;
+            partnerRowIndex = rowIndex;
+            partnerActionIndex = actionIndex;
+            partnerAction = action;
+            break;
+          }
+          if (partnerAction) break;
+        }
+      }
+
       const start = Number(foundAction.start);
       const end = Number(foundAction.end);
       if (!Number.isFinite(start) || !Number.isFinite(end)) return prev;
       if (!(start < cursorTime && cursorTime < end)) return prev;
 
       pushHistory(prev);
+
+      // Generate new link ids so we end up with two linked pairs (left and right).
+      const leftLinkId = foundLinkId && partnerAction ? `link-${uid()}` : foundLinkId;
+      const rightLinkId = foundLinkId && partnerAction ? `link-${uid()}` : foundLinkId;
 
       const rightActionId = `${String(foundAction.id)}-r-${uid()}`;
       const currentOffsetRaw = Number((foundAction as any)?.data?.offset ?? 0);
@@ -373,14 +500,14 @@ const TimelineEditor = () => {
         start,
         end: cursorTime,
         id: foundAction.id,
-        data: { ...(foundAction as any).data, offset: currentOffset },
+        data: { ...(foundAction as any).data, offset: currentOffset, linkId: leftLinkId ?? undefined },
       };
       const right: CustomTimelineAction = {
         ...foundAction,
         start: cursorTime,
         end,
         id: rightActionId,
-        data: { ...(foundAction as any).data, offset: rightOffset },
+        data: { ...(foundAction as any).data, offset: rightOffset, linkId: rightLinkId ?? undefined },
       };
 
       const next = structuredClone(prev) as CusTomTimelineRow[];
@@ -389,6 +516,34 @@ const TimelineEditor = () => {
       nextActions.splice(foundActionIndex, 1, left, right);
       nextActions.sort((a, b) => Number((a as any).start) - Number((b as any).start));
       nextRow.actions = nextActions as any;
+
+      if (partnerAction && partnerRowIndex >= 0 && partnerActionIndex >= 0) {
+        const pStart = Number((partnerAction as any).start);
+        const pEnd = Number((partnerAction as any).end);
+        if (Number.isFinite(pStart) && Number.isFinite(pEnd) && pStart === start && pEnd === end) {
+          const partnerRightId = `${String((partnerAction as any).id)}-r-${uid()}`;
+          const partnerLeft: CustomTimelineAction = {
+            ...partnerAction,
+            start,
+            end: cursorTime,
+            id: (partnerAction as any).id,
+            data: { ...(partnerAction as any).data, linkId: leftLinkId ?? undefined },
+          };
+          const partnerRight: CustomTimelineAction = {
+            ...partnerAction,
+            start: cursorTime,
+            end,
+            id: partnerRightId,
+            data: { ...(partnerAction as any).data, linkId: rightLinkId ?? undefined },
+          };
+
+          const partnerRow = next[partnerRowIndex];
+          const partnerActions = Array.isArray(partnerRow.actions) ? [...partnerRow.actions] : [];
+          partnerActions.splice(partnerActionIndex, 1, partnerLeft, partnerRight);
+          partnerActions.sort((a, b) => Number((a as any).start) - Number((b as any).start));
+          partnerRow.actions = partnerActions as any;
+        }
+      }
 
       return next;
     });
@@ -672,15 +827,39 @@ const TimelineEditor = () => {
               if (!clickedAction?.id) return;
               setSelectedActionId(String(clickedAction.id));
             }}
-            onActionMoveStart={() => {
+            onActionMoveStart={({ action }) => {
+              pendingGestureActionIdRef.current = String((action as any)?.id ?? '');
               if (pendingHistoryBeforeRef.current) return;
               pendingHistoryBeforeRef.current = structuredClone(data) as CusTomTimelineRow[];
               pendingHistorySignatureRef.current = getTimelineSignature(data);
             }}
-            onActionResizeStart={() => {
+            onActionMoveEnd={() => {
+              const pendingBefore = pendingHistoryBeforeRef.current;
+              const pendingSig = pendingHistorySignatureRef.current;
+              if (pendingBefore && pendingSig) {
+                const nextSig = getTimelineSignature(dataRef.current);
+                if (nextSig !== pendingSig) pushHistory(pendingBefore);
+              }
+              pendingHistoryBeforeRef.current = null;
+              pendingHistorySignatureRef.current = null;
+              pendingGestureActionIdRef.current = null;
+            }}
+            onActionResizeStart={({ action }) => {
+              pendingGestureActionIdRef.current = String((action as any)?.id ?? '');
               if (pendingHistoryBeforeRef.current) return;
               pendingHistoryBeforeRef.current = structuredClone(data) as CusTomTimelineRow[];
               pendingHistorySignatureRef.current = getTimelineSignature(data);
+            }}
+            onActionResizeEnd={() => {
+              const pendingBefore = pendingHistoryBeforeRef.current;
+              const pendingSig = pendingHistorySignatureRef.current;
+              if (pendingBefore && pendingSig) {
+                const nextSig = getTimelineSignature(dataRef.current);
+                if (nextSig !== pendingSig) pushHistory(pendingBefore);
+              }
+              pendingHistoryBeforeRef.current = null;
+              pendingHistorySignatureRef.current = null;
+              pendingGestureActionIdRef.current = null;
             }}
             onActionMoving={({ action, row, start, end }) => {
             const nextStart = Number(start);
@@ -690,6 +869,21 @@ const TimelineEditor = () => {
 
             const typedRow = row as CusTomTimelineRow;
             if (wouldOverlapInRow(typedRow, String(action.id), nextStart, nextEnd)) return false;
+
+            // Linked clips (video <-> embedded audio): ensure the partner row won't overlap either.
+            const currentRows = dataRef.current;
+            const partner = findLinkedPartner(currentRows, String(action.id));
+            if (partner) {
+              const partnerRow = currentRows[partner.rowIndex];
+              if (partnerRow && wouldOverlapInRow(partnerRow, String(partner.action.id), nextStart, nextEnd)) return false;
+
+              // Live visual sync: mirror the drag into the linked clip immediately.
+              setData((prev) => {
+                const updated = setStartEndForActionAndLinked(prev, String(action.id), nextStart, nextEnd);
+                dataRef.current = updated;
+                return updated;
+              });
+            }
           }}
             onActionResizing={({ action, row, start, end }) => {
             const nextStart = Number(start);
@@ -699,16 +893,32 @@ const TimelineEditor = () => {
 
             const typedRow = row as CusTomTimelineRow;
             if (wouldOverlapInRow(typedRow, String(action.id), nextStart, nextEnd)) return false;
+
+            const currentRows = dataRef.current;
+            const partner = findLinkedPartner(currentRows, String(action.id));
+            if (partner) {
+              const partnerRow = currentRows[partner.rowIndex];
+              if (partnerRow && wouldOverlapInRow(partnerRow, String(partner.action.id), nextStart, nextEnd)) return false;
+
+              // Live visual sync: mirror the resize into the linked clip immediately.
+              setData((prev) => {
+                const updated = setStartEndForActionAndLinked(prev, String(action.id), nextStart, nextEnd);
+                dataRef.current = updated;
+                return updated;
+              });
+            }
           }}
             onChange={(data) => {
               const nextClean = cleanEditorData(data as CusTomTimelineRow[]);
-              setData(nextClean);
+              const sourceActionId = pendingGestureActionIdRef.current;
+              const nextLinked = sourceActionId ? applyLinkedStartEnd(nextClean, sourceActionId) : nextClean;
+              setData(nextLinked);
 
               // If this onChange is the result of a drag/resize gesture, record a single history entry.
               const pendingBefore = pendingHistoryBeforeRef.current;
               const pendingSig = pendingHistorySignatureRef.current;
               if (pendingBefore && pendingSig) {
-                const nextSig = getTimelineSignature(nextClean);
+                const nextSig = getTimelineSignature(nextLinked);
                 if (nextSig !== pendingSig) pushHistory(pendingBefore);
                 pendingHistoryBeforeRef.current = null;
                 pendingHistorySignatureRef.current = null;
