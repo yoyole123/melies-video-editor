@@ -110,6 +110,39 @@ const TimelineEditor = () => {
   const pendingHistorySignatureRef = useRef<string | null>(null);
   const pendingGestureActionIdRef = useRef<string | null>(null);
 
+  // Cursor magnet: snap when close, but release easily if the user keeps dragging.
+  const CURSOR_SNAP_THRESHOLD_SEC = 0.9;
+  const CURSOR_SNAP_RELEASE_SEC = 1.05;
+  const snapStateRef = useRef<{
+    actionId: string | null;
+    edge: 'start' | 'end' | null;
+  }>({ actionId: null, edge: null });
+
+  const gestureRef = useRef<{
+    actionId: string | null;
+    mode: 'move' | 'resize' | null;
+    dir: 'left' | 'right' | null;
+    // Used to convert pointer X deltas into time deltas.
+    basePointerTime: number | null;
+    lastPointerTime: number | null;
+    // Baseline clip range at the moment we "take over".
+    initialStart: number;
+    initialEnd: number;
+    // Once snapping engages, we fully drive the clip from state.
+    takeover: boolean;
+  }>({
+    actionId: null,
+    mode: null,
+    dir: null,
+    basePointerTime: null,
+    lastPointerTime: null,
+    initialStart: 0,
+    initialEnd: 0,
+    takeover: false,
+  });
+
+  const pointerListenersAttachedRef = useRef(false);
+
   /**
    * Compute a lightweight signature of the timeline data for change detection.
    * This keeps undo/redo history from recording no-op moves/resizes.
@@ -229,6 +262,102 @@ const TimelineEditor = () => {
     return next;
   };
 
+  const setStartEndForActionOnly = (rows: CusTomTimelineRow[], sourceActionId: string, nextStart: number, nextEnd: number) => {
+    if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd) || nextEnd <= nextStart) return rows;
+    const source = findActionById(rows, sourceActionId);
+    if (!source) return rows;
+    const existingStart = Number(source.action.start);
+    const existingEnd = Number(source.action.end);
+    if (existingStart === nextStart && existingEnd === nextEnd) return rows;
+
+    const next = structuredClone(rows) as CusTomTimelineRow[];
+    const sourceRow = next[source.rowIndex];
+    const sourceActions = Array.isArray(sourceRow.actions) ? [...sourceRow.actions] : [];
+    const updatedSource: CustomTimelineAction = { ...(sourceActions[source.actionIndex] as any), start: nextStart, end: nextEnd };
+    sourceActions.splice(source.actionIndex, 1, updatedSource as any);
+    sourceRow.actions = sourceActions as any;
+    return next;
+  };
+
+  const getCursorTime = () => {
+    const t = timelineState.current?.getTime ? Number(timelineState.current.getTime()) : 0;
+    return Number.isFinite(t) ? Math.max(0, t) : 0;
+  };
+
+  const maybeSnapToCursorForMove = (actionId: string, nextStart: number, nextEnd: number) => {
+    const cursorTime = getCursorTime();
+    const duration = nextEnd - nextStart;
+    if (!Number.isFinite(duration) || duration <= 0) {
+      return { start: nextStart, end: nextEnd, snapped: false, edge: null as any };
+    }
+
+    const distStart = Math.abs(nextStart - cursorTime);
+    const distEnd = Math.abs(nextEnd - cursorTime);
+    const closerEdge: 'start' | 'end' = distStart <= distEnd ? 'start' : 'end';
+    const minDist = Math.min(distStart, distEnd);
+
+    const snapState = snapStateRef.current;
+    const isSameAction = snapState.actionId === actionId;
+    const isSnapped = isSameAction && snapState.edge != null;
+
+    if (!isSnapped) {
+      if (minDist > CURSOR_SNAP_THRESHOLD_SEC) {
+        return { start: nextStart, end: nextEnd, snapped: false, edge: null as any };
+      }
+      snapStateRef.current = { actionId, edge: closerEdge };
+    } else {
+      const edge = snapState.edge;
+      const dist = edge === 'start' ? distStart : distEnd;
+      if (dist > CURSOR_SNAP_RELEASE_SEC) {
+        snapStateRef.current = { actionId, edge: null };
+        return { start: nextStart, end: nextEnd, snapped: false, edge: null as any };
+      }
+    }
+
+    const edge = snapStateRef.current.edge as 'start' | 'end';
+    if (edge === 'start') {
+      const start = cursorTime;
+      const end = start + duration;
+      return { start: Math.max(0, start), end: Math.max(Math.max(0, start), end), snapped: true, edge };
+    }
+
+    const end = cursorTime;
+    const start = end - duration;
+    return { start: Math.max(0, start), end: Math.max(0, end), snapped: true, edge };
+  };
+
+  const maybeSnapToCursorForResize = (actionId: string, nextStart: number, nextEnd: number, dir: 'left' | 'right') => {
+    const cursorTime = getCursorTime();
+    const snapEdge: 'start' | 'end' = dir === 'left' ? 'start' : 'end';
+    const dist = snapEdge === 'start' ? Math.abs(nextStart - cursorTime) : Math.abs(nextEnd - cursorTime);
+
+    const snapState = snapStateRef.current;
+    const isSameAction = snapState.actionId === actionId;
+    const isSnapped = isSameAction && snapState.edge === snapEdge;
+
+    if (!isSnapped) {
+      if (dist > CURSOR_SNAP_THRESHOLD_SEC) {
+        return { start: nextStart, end: nextEnd, snapped: false };
+      }
+      snapStateRef.current = { actionId, edge: snapEdge };
+    } else {
+      if (dist > CURSOR_SNAP_RELEASE_SEC) {
+        snapStateRef.current = { actionId, edge: null };
+        return { start: nextStart, end: nextEnd, snapped: false };
+      }
+    }
+
+    if (snapEdge === 'start') {
+      const start = Math.max(0, cursorTime);
+      const end = Math.max(start + 0.01, nextEnd);
+      return { start, end, snapped: true };
+    }
+
+    const end = Math.max(0, cursorTime);
+    const start = Math.min(nextStart, end - 0.01);
+    return { start: Math.max(0, start), end, snapped: true };
+  };
+
   const insertActionAtTime = (item: { kind: 'video' | 'audio'; src: string; previewSrc?: string; name: string; defaultDuration?: number }, at: number) => {
     const duration = item.defaultDuration ?? 10;
     let start = Math.max(0, at);
@@ -332,6 +461,57 @@ const TimelineEditor = () => {
     const left = position + getTimelineScrollLeft();
     const time = ((left - startLeft) * scale) / scaleWidth;
     return Math.max(0, time);
+  };
+
+  const attachGesturePointerTracking = () => {
+    if (pointerListenersAttachedRef.current) return;
+    pointerListenersAttachedRef.current = true;
+
+    const onPointerMove = (e: PointerEvent) => {
+      const g = gestureRef.current;
+      if (!g.actionId || !g.mode) return;
+      // Only track primary pointer (helps avoid odd multi-touch behavior).
+      if (e.isPrimary === false) return;
+
+      const t = timeFromClientX(e.clientX);
+      if (g.basePointerTime == null) {
+        g.basePointerTime = t;
+      }
+      g.lastPointerTime = t;
+    };
+
+    const onPointerUpOrCancel = () => {
+      // If the lib misses an end callback, ensure we don't stay stuck in takeover mode.
+      gestureRef.current = {
+        actionId: null,
+        mode: null,
+        dir: null,
+        basePointerTime: null,
+        lastPointerTime: null,
+        initialStart: 0,
+        initialEnd: 0,
+        takeover: false,
+      };
+      snapStateRef.current = { actionId: null, edge: null };
+    };
+
+    window.addEventListener('pointermove', onPointerMove, { capture: true });
+    window.addEventListener('pointerup', onPointerUpOrCancel, { capture: true });
+    window.addEventListener('pointercancel', onPointerUpOrCancel, { capture: true });
+
+    // Stash removers on the ref object (cheapest place without extra state).
+    (gestureRef.current as any)._removePointerListeners = () => {
+      window.removeEventListener('pointermove', onPointerMove, { capture: true } as any);
+      window.removeEventListener('pointerup', onPointerUpOrCancel, { capture: true } as any);
+      window.removeEventListener('pointercancel', onPointerUpOrCancel, { capture: true } as any);
+      pointerListenersAttachedRef.current = false;
+    };
+  };
+
+  const detachGesturePointerTracking = () => {
+    const remove = (gestureRef.current as any)?._removePointerListeners as undefined | (() => void);
+    remove?.();
+    delete (gestureRef.current as any)._removePointerListeners;
   };
 
   /**
@@ -829,6 +1009,22 @@ const TimelineEditor = () => {
             }}
             onActionMoveStart={({ action }) => {
               pendingGestureActionIdRef.current = String((action as any)?.id ?? '');
+              snapStateRef.current = { actionId: String((action as any)?.id ?? ''), edge: null };
+
+              const start = Number((action as any)?.start);
+              const end = Number((action as any)?.end);
+              gestureRef.current = {
+                actionId: String((action as any)?.id ?? ''),
+                mode: 'move',
+                dir: null,
+                basePointerTime: null,
+                lastPointerTime: null,
+                initialStart: Number.isFinite(start) ? start : 0,
+                initialEnd: Number.isFinite(end) ? end : 0,
+                takeover: false,
+              };
+              attachGesturePointerTracking();
+
               if (pendingHistoryBeforeRef.current) return;
               pendingHistoryBeforeRef.current = structuredClone(data) as CusTomTimelineRow[];
               pendingHistorySignatureRef.current = getTimelineSignature(data);
@@ -843,9 +1039,38 @@ const TimelineEditor = () => {
               pendingHistoryBeforeRef.current = null;
               pendingHistorySignatureRef.current = null;
               pendingGestureActionIdRef.current = null;
+              snapStateRef.current = { actionId: null, edge: null };
+
+              gestureRef.current = {
+                actionId: null,
+                mode: null,
+                dir: null,
+                basePointerTime: null,
+                lastPointerTime: null,
+                initialStart: 0,
+                initialEnd: 0,
+                takeover: false,
+              };
+              detachGesturePointerTracking();
             }}
             onActionResizeStart={({ action }) => {
               pendingGestureActionIdRef.current = String((action as any)?.id ?? '');
+              snapStateRef.current = { actionId: String((action as any)?.id ?? ''), edge: null };
+
+              const start = Number((action as any)?.start);
+              const end = Number((action as any)?.end);
+              gestureRef.current = {
+                actionId: String((action as any)?.id ?? ''),
+                mode: 'resize',
+                dir: null,
+                basePointerTime: null,
+                lastPointerTime: null,
+                initialStart: Number.isFinite(start) ? start : 0,
+                initialEnd: Number.isFinite(end) ? end : 0,
+                takeover: false,
+              };
+              attachGesturePointerTracking();
+
               if (pendingHistoryBeforeRef.current) return;
               pendingHistoryBeforeRef.current = structuredClone(data) as CusTomTimelineRow[];
               pendingHistorySignatureRef.current = getTimelineSignature(data);
@@ -860,10 +1085,65 @@ const TimelineEditor = () => {
               pendingHistoryBeforeRef.current = null;
               pendingHistorySignatureRef.current = null;
               pendingGestureActionIdRef.current = null;
+              snapStateRef.current = { actionId: null, edge: null };
+
+              gestureRef.current = {
+                actionId: null,
+                mode: null,
+                dir: null,
+                basePointerTime: null,
+                lastPointerTime: null,
+                initialStart: 0,
+                initialEnd: 0,
+                takeover: false,
+              };
+              detachGesturePointerTracking();
             }}
             onActionMoving={({ action, row, start, end }) => {
-            const nextStart = Number(start);
-            const nextEnd = Number(end);
+            const actionId = String((action as any)?.id ?? '');
+            const g = gestureRef.current;
+
+            // If we are in takeover mode for this gesture, drive movement from pointer tracking.
+            if (g.takeover && g.mode === 'move' && g.actionId === actionId) {
+              const base = g.basePointerTime;
+              const last = g.lastPointerTime;
+              const delta = base != null && last != null ? last - base : 0;
+              const proposedStart = g.initialStart + delta;
+              const proposedEnd = g.initialEnd + delta;
+              const snapped = maybeSnapToCursorForMove(actionId, proposedStart, proposedEnd);
+              const nextStart = snapped.start;
+              const nextEnd = snapped.end;
+
+              const typedRow = row as CusTomTimelineRow;
+              if (wouldOverlapInRow(typedRow, String(action.id), nextStart, nextEnd)) return false;
+
+              const currentRows = dataRef.current;
+              const partner = findLinkedPartner(currentRows, String(action.id));
+              if (partner) {
+                const partnerRow = currentRows[partner.rowIndex];
+                if (partnerRow && wouldOverlapInRow(partnerRow, String(partner.action.id), nextStart, nextEnd)) return false;
+              }
+
+              setData((prev) => {
+                const updated = partner
+                  ? setStartEndForActionAndLinked(prev, String(action.id), nextStart, nextEnd)
+                  : setStartEndForActionOnly(prev, String(action.id), nextStart, nextEnd);
+                dataRef.current = updated;
+                return updated;
+              });
+
+              // Always block the library while in takeover.
+              return false;
+            }
+
+            const rawStart = Number(start);
+            const rawEnd = Number(end);
+            if (!Number.isFinite(rawStart) || !Number.isFinite(rawEnd)) return false;
+            if (rawEnd <= rawStart) return false;
+
+            const snapped = maybeSnapToCursorForMove(actionId, rawStart, rawEnd);
+            const nextStart = snapped.start;
+            const nextEnd = snapped.end;
             if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd)) return false;
             if (nextEnd <= nextStart) return false;
 
@@ -876,18 +1156,87 @@ const TimelineEditor = () => {
             if (partner) {
               const partnerRow = currentRows[partner.rowIndex];
               if (partnerRow && wouldOverlapInRow(partnerRow, String(partner.action.id), nextStart, nextEnd)) return false;
+            }
 
-              // Live visual sync: mirror the drag into the linked clip immediately.
+            // Live visual sync:
+            // - If linked: update both.
+            // - If snapped (even if not linked): force the dragged clip to the snapped range.
+            if (partner || snapped.snapped) {
               setData((prev) => {
-                const updated = setStartEndForActionAndLinked(prev, String(action.id), nextStart, nextEnd);
+                const updated = partner
+                  ? setStartEndForActionAndLinked(prev, String(action.id), nextStart, nextEnd)
+                  : setStartEndForActionOnly(prev, String(action.id), nextStart, nextEnd);
                 dataRef.current = updated;
                 return updated;
               });
             }
+
+            // IMPORTANT: when snapped, prevent the timeline lib from applying its own drag position.
+            // This makes the actively-dragged clip stick visually to the cursor magnet.
+            if (snapped.snapped) {
+              // Take over for the rest of this drag gesture so we can also detect "pull away" and release.
+              const base = gestureRef.current.lastPointerTime;
+              gestureRef.current = {
+                actionId,
+                mode: 'move',
+                dir: null,
+                basePointerTime: base,
+                lastPointerTime: gestureRef.current.lastPointerTime,
+                initialStart: rawStart,
+                initialEnd: rawEnd,
+                takeover: true,
+              };
+              attachGesturePointerTracking();
+              return false;
+            }
           }}
-            onActionResizing={({ action, row, start, end }) => {
-            const nextStart = Number(start);
-            const nextEnd = Number(end);
+            onActionResizing={({ action, row, start, end, dir }) => {
+            const actionId = String((action as any)?.id ?? '');
+            const g = gestureRef.current;
+
+            const resizeDir = (dir as 'left' | 'right') ?? 'right';
+
+            if (g.takeover && g.mode === 'resize' && g.actionId === actionId) {
+              const base = g.basePointerTime;
+              const last = g.lastPointerTime;
+              const delta = base != null && last != null ? last - base : 0;
+
+              const proposedStart = resizeDir === 'left' ? g.initialStart + delta : g.initialStart;
+              const proposedEnd = resizeDir === 'right' ? g.initialEnd + delta : g.initialEnd;
+
+              const snapped = maybeSnapToCursorForResize(actionId, proposedStart, proposedEnd, resizeDir);
+              const nextStart = snapped.start;
+              const nextEnd = snapped.end;
+
+              const typedRow = row as CusTomTimelineRow;
+              if (wouldOverlapInRow(typedRow, String(action.id), nextStart, nextEnd)) return false;
+
+              const currentRows = dataRef.current;
+              const partner = findLinkedPartner(currentRows, String(action.id));
+              if (partner) {
+                const partnerRow = currentRows[partner.rowIndex];
+                if (partnerRow && wouldOverlapInRow(partnerRow, String(partner.action.id), nextStart, nextEnd)) return false;
+              }
+
+              setData((prev) => {
+                const updated = partner
+                  ? setStartEndForActionAndLinked(prev, String(action.id), nextStart, nextEnd)
+                  : setStartEndForActionOnly(prev, String(action.id), nextStart, nextEnd);
+                dataRef.current = updated;
+                return updated;
+              });
+
+              return false;
+            }
+
+            const rawStart = Number(start);
+            const rawEnd = Number(end);
+            if (!Number.isFinite(rawStart) || !Number.isFinite(rawEnd)) return false;
+            if (rawEnd <= rawStart) return false;
+
+            const snapped = maybeSnapToCursorForResize(actionId, rawStart, rawEnd, resizeDir);
+            const nextStart = snapped.start;
+            const nextEnd = snapped.end;
             if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd)) return false;
             if (nextEnd <= nextStart) return false;
 
@@ -899,13 +1248,32 @@ const TimelineEditor = () => {
             if (partner) {
               const partnerRow = currentRows[partner.rowIndex];
               if (partnerRow && wouldOverlapInRow(partnerRow, String(partner.action.id), nextStart, nextEnd)) return false;
+            }
 
-              // Live visual sync: mirror the resize into the linked clip immediately.
+            if (partner || snapped.snapped) {
               setData((prev) => {
-                const updated = setStartEndForActionAndLinked(prev, String(action.id), nextStart, nextEnd);
+                const updated = partner
+                  ? setStartEndForActionAndLinked(prev, String(action.id), nextStart, nextEnd)
+                  : setStartEndForActionOnly(prev, String(action.id), nextStart, nextEnd);
                 dataRef.current = updated;
                 return updated;
               });
+            }
+
+            if (snapped.snapped) {
+              const base = gestureRef.current.lastPointerTime;
+              gestureRef.current = {
+                actionId,
+                mode: 'resize',
+                dir: resizeDir,
+                basePointerTime: base,
+                lastPointerTime: gestureRef.current.lastPointerTime,
+                initialStart: rawStart,
+                initialEnd: rawEnd,
+                takeover: true,
+              };
+              attachGesturePointerTracking();
+              return false;
             }
           }}
             onChange={(data) => {
