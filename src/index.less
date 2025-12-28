@@ -192,6 +192,10 @@
     }
   }
 
+  .timeline-drop {
+    position: relative;
+  }
+
   // Cursor: improve touch hit target on mobile.
   .timeline-editor-cursor,
   .timeline-editor-cursor-area {
@@ -420,5 +424,63 @@
   .timeline-drop.is-over {
     outline: 2px dashed fade(#fff, 25);
     outline-offset: 4px;
+  }
+
+  // While dragging footage over the timeline, highlight the row under the pointer.
+  // Note: the library prefixes `edit-row` to `timeline-editor-edit-row`.
+  .timeline-editor-edit-row.dnd-drop-hover {
+    box-shadow: inset 0 0 0 2px fade(#fff, 14);
+    background: fade(#fff, 4);
+  }
+
+  .timeline-lane-labels {
+    position: absolute;
+    left: 0;
+    width: 22px;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    z-index: 3;
+  }
+
+  .timeline-lane-label {
+    width: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: fade(#fff, 70);
+    background: fade(#000, 20);
+    box-shadow: inset 0 0 0 1px fade(#fff, 8);
+  }
+
+  .timeline-lane-label.is-hover {
+    box-shadow: inset 0 0 0 2px fade(#fff, 18);
+    color: fade(#fff, 88);
+  }
+
+  .timeline-ghost-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 0;
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .timeline-ghost-clip {
+    position: absolute;
+    border-radius: 4px;
+    box-shadow: inset 0 0 0 2px fade(#fff, 22);
+    background: fade(#fff, 6);
+  }
+
+  .timeline-ghost-clip.is-video {
+    background: fade(@color-lottie, 18);
+  }
+
+  .timeline-ghost-clip.is-audio {
+    background: fade(@color-audio, 18);
   }
 }

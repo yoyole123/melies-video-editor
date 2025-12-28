@@ -1,6 +1,6 @@
 import { Timeline } from '@xzdarcy/react-timeline-editor';
 import type { TimelineState } from '@xzdarcy/react-timeline-editor';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CustomRender0, CustomRender1, CustomRender2 } from './custom';
 import './index.less';
 import { mockData, mockEffect, scale, scaleWidth, startLeft } from './mock';
@@ -90,8 +90,54 @@ const TimelineEditor = () => {
   const autoScrollWhenPlay = useRef<boolean>(true);
   const [activeFootage, setActiveFootage] = useState<FootageItem | null>(null);
   const [activeFootageSize, setActiveFootageSize] = useState<{ width: number; height: number } | null>(null);
+  const [hoveredDropRowIndex, setHoveredDropRowIndex] = useState<number | null>(null);
+  const [laneScrollTop, setLaneScrollTop] = useState(0);
+  const [laneScrollLeft, setLaneScrollLeft] = useState(0);
+  const [editAreaOffsetTop, setEditAreaOffsetTop] = useState(0);
+  const [editAreaOffsetLeft, setEditAreaOffsetLeft] = useState(0);
+  const [isDragOverTimeline, setIsDragOverTimeline] = useState(false);
+  const [dragClient, setDragClient] = useState<{ x: number; y: number } | null>(null);
+  const lastDragClientRef = useRef<{ x: number; y: number } | null>(null);
+  const dragStartClientRef = useRef<{ x: number; y: number } | null>(null);
   const timelinePointerDownRef = useRef<{ x: number; y: number } | null>(null);
   const cursorDraggingRef = useRef<{ pointerId: number } | null>(null);
+
+  const ROW_HEIGHT_PX = isMobile ? 48 : 32;
+
+  // Lane layout (row indexes) used by this app.
+  // 0: V1
+  // 1: V2
+  // 2: A1
+  // 3: A2
+  const VIDEO_ROW_INDEXES = [0, 1] as const;
+  const AUDIO_ROW_INDEXES = [2, 3] as const;
+  const LANE_LABELS = ['V1', 'V2', 'A1', 'A2'] as const;
+
+  const pickNearestRowIndex = (rawRowIndex: number | null, candidateIndexes: readonly number[]) => {
+    if (candidateIndexes.length === 0) return null;
+    if (rawRowIndex == null) return candidateIndexes[0];
+    let best = candidateIndexes[0];
+    let bestDist = Math.abs(rawRowIndex - best);
+    for (const idx of candidateIndexes) {
+      const dist = Math.abs(rawRowIndex - idx);
+      if (dist < bestDist) {
+        best = idx;
+        bestDist = dist;
+      }
+    }
+    return best;
+  };
+
+  const pickLaneForItem = (item: FootageItem | null, rawRowIndex: number | null) => {
+    if (!item) return null;
+    if (item.kind === 'video') return pickNearestRowIndex(rawRowIndex, VIDEO_ROW_INDEXES);
+    return pickNearestRowIndex(rawRowIndex, AUDIO_ROW_INDEXES);
+  };
+
+  const pairedAudioRowForVideoRow = (videoRowIndex: number) => {
+    // Keep video + its embedded audio together by pairing V1->A1 and V2->A2.
+    return videoRowIndex === VIDEO_ROW_INDEXES[1] ? AUDIO_ROW_INDEXES[1] : AUDIO_ROW_INDEXES[0];
+  };
 
   // Preload media referenced by timeline actions to reduce buffering/stalls during playback.
   // This is intentionally fire-and-forget; cache dedupes across edits.
@@ -102,6 +148,34 @@ const TimelineEditor = () => {
   useEffect(() => {
     dataRef.current = data;
   }, [data]);
+
+  useLayoutEffect(() => {
+    const root = timelineWrapRef.current;
+    if (!root) return;
+
+    const measure = () => {
+      const wrapRect = root.getBoundingClientRect();
+      const editArea = root.querySelector('.timeline-editor-edit-area') as HTMLElement | null;
+      if (!editArea) return;
+      const editRect = editArea.getBoundingClientRect();
+      setEditAreaOffsetTop(editRect.top - wrapRect.top);
+      setEditAreaOffsetLeft(editRect.left - wrapRect.left);
+    };
+
+    const raf = requestAnimationFrame(measure);
+    window.addEventListener('resize', measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', measure);
+    };
+  }, [isMobile, data.length]);
+
+  const isPointOverTimeline = (pt: { x: number; y: number } | null) => {
+    const root = timelineWrapRef.current;
+    if (!root || !pt) return false;
+    const rect = root.getBoundingClientRect();
+    return pt.x >= rect.left && pt.x <= rect.right && pt.y >= rect.top && pt.y <= rect.bottom;
+  };
 
   const uidCounterRef = useRef(0);
   const uid = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `uid-${++uidCounterRef.current}`);
@@ -358,7 +432,11 @@ const TimelineEditor = () => {
     return { start: Math.max(0, start), end, snapped: true };
   };
 
-  const insertActionAtTime = (item: { kind: 'video' | 'audio'; src: string; previewSrc?: string; name: string; defaultDuration?: number }, at: number) => {
+  const insertActionAtTime = (
+    item: { kind: 'video' | 'audio'; src: string; previewSrc?: string; name: string; defaultDuration?: number },
+    at: number,
+    targetRowIndex?: number | null
+  ) => {
     const duration = item.defaultDuration ?? 10;
     let start = Math.max(0, at);
     let end = start + duration;
@@ -370,11 +448,12 @@ const TimelineEditor = () => {
       pushHistory(prev);
       const next = structuredClone(prev) as CusTomTimelineRow[];
 
-      // Ensure we have at least 3 rows:
-      // 0: video
-      // 1: embedded video audio
-      // 2: external audio
-      while (next.length < 3) next.push({ id: `${next.length}`, actions: [] } as unknown as CusTomTimelineRow);
+      // Ensure we have at least 4 lanes: V1, V2, A1, A2
+      while (next.length < 4) next.push({ id: `${next.length}`, actions: [] } as unknown as CusTomTimelineRow);
+
+      const raw = Number.isFinite(Number(targetRowIndex)) ? Number(targetRowIndex) : null;
+      const chosenVideoRowIndex = pickNearestRowIndex(raw, VIDEO_ROW_INDEXES) ?? VIDEO_ROW_INDEXES[0];
+      const chosenAudioRowIndex = pickNearestRowIndex(raw, AUDIO_ROW_INDEXES) ?? AUDIO_ROW_INDEXES[0];
 
       const bumpStartToAvoidOverlaps = (rowIndexes: number[]) => {
         const intervals: Array<{ start: number; end: number }> = [];
@@ -398,15 +477,17 @@ const TimelineEditor = () => {
       };
 
       if (item.kind === 'video') {
-        // Find a slot that is free in BOTH video row and video-audio row.
-        bumpStartToAvoidOverlaps([0, 1]);
+        // Video drops go to the nearest video lane; its embedded audio goes to the paired audio lane.
+        const vRow = chosenVideoRowIndex;
+        const aRow = pairedAudioRowForVideoRow(vRow);
+        bumpStartToAvoidOverlaps([vRow, aRow]);
 
         const linkId = `link-${uid()}`;
         const clipId = `video-${uid()}`;
         const audioId = `video-audio-${uid()}`;
 
-        next[0].actions = [
-          ...(next[0].actions ?? []),
+        next[vRow].actions = [
+          ...(next[vRow].actions ?? []),
           {
             id: clipId,
             start,
@@ -416,8 +497,8 @@ const TimelineEditor = () => {
           } as CustomTimelineAction,
         ];
 
-        next[1].actions = [
-          ...(next[1].actions ?? []),
+        next[aRow].actions = [
+          ...(next[aRow].actions ?? []),
           {
             id: audioId,
             start,
@@ -427,10 +508,11 @@ const TimelineEditor = () => {
           } as CustomTimelineAction,
         ];
       } else {
-        // External audio: only needs a free slot in the external-audio row.
-        bumpStartToAvoidOverlaps([2]);
-        next[2].actions = [
-          ...(next[2].actions ?? []),
+        // Audio drops go to the nearest audio lane.
+        const aRow = chosenAudioRowIndex;
+        bumpStartToAvoidOverlaps([aRow]);
+        next[aRow].actions = [
+          ...(next[aRow].actions ?? []),
           {
             id: `audio-${uid()}`,
             start,
@@ -452,6 +534,8 @@ const TimelineEditor = () => {
     return grid?.scrollLeft ?? 0;
   };
 
+  const getTimelineScrollTop = () => laneScrollTop;
+
   const timeFromClientX = (clientX: number) => {
     const root = timelineWrapRef.current;
     if (!root) return 0;
@@ -461,6 +545,91 @@ const TimelineEditor = () => {
     const left = position + getTimelineScrollLeft();
     const time = ((left - startLeft) * scale) / scaleWidth;
     return Math.max(0, time);
+  };
+
+  const timeToPixel = (t: number) => {
+    const time = Number(t);
+    if (!Number.isFinite(time)) return 0;
+    return startLeft + (time * scaleWidth) / scale;
+  };
+
+  const computeBumpedStart = (
+    item: FootageItem,
+    desiredStart: number,
+    laneRowIndex: number,
+    rows: CusTomTimelineRow[]
+  ): number => {
+    const duration = item.defaultDuration ?? 10;
+    let start = Math.max(0, desiredStart);
+    let end = start + duration;
+
+    const rowIndexes: number[] = [];
+    if (item.kind === 'video') {
+      // Video: enforce slot free in both the chosen video lane and its paired audio lane.
+      const vRow = laneRowIndex;
+      const aRow = pairedAudioRowForVideoRow(vRow);
+      rowIndexes.push(vRow, aRow);
+    } else {
+      rowIndexes.push(laneRowIndex);
+    }
+
+    const intervals: Array<{ start: number; end: number }> = [];
+    for (const idx of rowIndexes) {
+      const actions = Array.isArray(rows[idx]?.actions) ? rows[idx].actions : [];
+      for (const a of actions) {
+        const s = Number((a as any)?.start);
+        const e = Number((a as any)?.end);
+        if (!Number.isFinite(s) || !Number.isFinite(e)) continue;
+        intervals.push({ start: s, end: e });
+      }
+    }
+    intervals.sort((a, b) => a.start - b.start);
+
+    for (const other of intervals) {
+      if (!rangesOverlap(start, end, other.start, other.end)) continue;
+      start = other.end;
+      end = start + duration;
+    }
+
+    return Math.max(0, start);
+  };
+
+  const rowIndexFromClientY = (clientY: number) => {
+    const root = timelineWrapRef.current;
+    if (!root) return null;
+    const editArea = root.querySelector('.timeline-editor-edit-area') as HTMLElement | null;
+    if (!editArea) return null;
+    const rect = editArea.getBoundingClientRect();
+    const position = clientY - rect.y;
+    if (position < 0 || position > rect.height) return null;
+    const y = position + getTimelineScrollTop();
+    const idx = Math.floor(y / ROW_HEIGHT_PX);
+    if (!Number.isFinite(idx)) return null;
+    const max = Math.max(0, dataRef.current.length - 1);
+    return Math.min(Math.max(0, idx), max);
+  };
+
+  const getClientXYFromEvent = (ev: Event | null | undefined): { x: number; y: number } | null => {
+    if (!ev) return null;
+
+    // PointerEvent/MouseEvent
+    if ('clientX' in (ev as any) && 'clientY' in (ev as any)) {
+      const x = Number((ev as any).clientX);
+      const y = Number((ev as any).clientY);
+      if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+    }
+
+    // TouchEvent
+    const touches = (ev as any).touches as TouchList | undefined;
+    const changedTouches = (ev as any).changedTouches as TouchList | undefined;
+    const t = (touches && touches.length ? touches[0] : null) || (changedTouches && changedTouches.length ? changedTouches[0] : null);
+    if (t) {
+      const x = Number((t as any).clientX);
+      const y = Number((t as any).clientY);
+      if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+    }
+
+    return null;
   };
 
   const attachGesturePointerTracking = () => {
@@ -530,20 +699,23 @@ const TimelineEditor = () => {
    * to attach the `action-selected` CSS class.
    */
   const editorDataForRender = useMemo(() => {
-    if (!selectedActionId) return data;
+    return data.map((row, rowIndex) => {
+      const hasSelected = selectedActionId ? (row.actions ?? []).some((action) => String(action.id) === selectedActionId) : false;
+      const isDropHover = activeFootage != null && hoveredDropRowIndex != null && rowIndex === hoveredDropRowIndex;
+      const baseClassNames = Array.isArray((row as any).classNames) ? (row as any).classNames : [];
+      const classNames = isDropHover ? [...baseClassNames, 'dnd-drop-hover'] : baseClassNames;
 
-    return data.map((row) => {
-      const hasSelected = (row.actions ?? []).some((action) => String(action.id) === selectedActionId);
       return {
         ...row,
+        classNames,
         selected: hasSelected,
         actions: (row.actions ?? []).map((action) => ({
           ...action,
-          selected: String(action.id) === selectedActionId,
+          selected: selectedActionId ? String(action.id) === selectedActionId : false,
         })),
       };
     });
-  }, [data, selectedActionId]);
+  }, [data, selectedActionId, activeFootage, hoveredDropRowIndex]);
 
   /**
    * Delete the currently selected action from the timeline.
@@ -810,6 +982,20 @@ const TimelineEditor = () => {
     const item = (event.active.data.current as any)?.item as FootageItem | undefined;
     setActiveFootage(item ?? null);
 
+    const pt = getClientXYFromEvent(event.activatorEvent);
+    lastDragClientRef.current = pt;
+    dragStartClientRef.current = pt;
+    setDragClient(pt);
+    if (pt) {
+      const over = isPointOverTimeline(pt);
+      setIsDragOverTimeline(over);
+      const raw = rowIndexFromClientY(pt.y);
+      setHoveredDropRowIndex(over ? pickLaneForItem(item ?? null, raw) : null);
+    } else {
+      setHoveredDropRowIndex(null);
+      setIsDragOverTimeline(false);
+    }
+
     const initial = event.active.rect.current.initial;
     if (initial) {
       setActiveFootageSize({ width: initial.width, height: initial.height });
@@ -819,31 +1005,86 @@ const TimelineEditor = () => {
   };
 
   const handleDragMove = (event: DragMoveEvent) => {
-    if (activeFootageSize) return;
     const initial = event.active.rect.current.initial;
-    if (initial) {
+    if (!activeFootageSize && initial) {
       setActiveFootageSize({ width: initial.width, height: initial.height });
     }
+
+    const start = dragStartClientRef.current;
+    if (!start) {
+      setHoveredDropRowIndex(null);
+      return;
+    }
+
+    const dx = Number((event as any)?.delta?.x ?? 0);
+    const dy = Number((event as any)?.delta?.y ?? 0);
+    const pt = { x: start.x + (Number.isFinite(dx) ? dx : 0), y: start.y + (Number.isFinite(dy) ? dy : 0) };
+    lastDragClientRef.current = pt;
+    setDragClient(pt);
+
+    const over = isPointOverTimeline(pt);
+    setIsDragOverTimeline(over);
+    const raw = rowIndexFromClientY(pt.y);
+    setHoveredDropRowIndex(over ? pickLaneForItem(activeFootage, raw) : null);
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
     const item = (event.active.data.current as any)?.item as FootageItem | undefined;
-    const overTimeline = String(event.over?.id ?? '') === 'timeline-drop';
-    const cursorTime = timelineState.current?.getTime ? timelineState.current.getTime() : 0;
-    const shouldInsertAtCursor = Boolean(item) && (overTimeline || event.over == null);
+    const start = dragStartClientRef.current;
+    const dx = Number((event as any)?.delta?.x ?? 0);
+    const dy = Number((event as any)?.delta?.y ?? 0);
+    const pt = start
+      ? { x: start.x + (Number.isFinite(dx) ? dx : 0), y: start.y + (Number.isFinite(dy) ? dy : 0) }
+      : lastDragClientRef.current;
+    lastDragClientRef.current = pt;
 
-    if (item && shouldInsertAtCursor) {
-      insertActionAtTime(item, Math.max(0, cursorTime));
+    const overByCollision = String(event.over?.id ?? '') === 'timeline-drop';
+    const overTimeline = overByCollision || isPointOverTimeline(pt);
+    if (item && overTimeline && pt) {
+      const dropTime = timeFromClientX(pt.x);
+      const dropRowIndex = rowIndexFromClientY(pt.y);
+      const laneRowIndex = pickLaneForItem(item, dropRowIndex);
+      setHoveredDropRowIndex(laneRowIndex);
+      insertActionAtTime(item, Math.max(0, dropTime), laneRowIndex);
     }
 
     setActiveFootage(null);
     setActiveFootageSize(null);
+    setHoveredDropRowIndex(null);
+    setIsDragOverTimeline(false);
+    setDragClient(null);
+    dragStartClientRef.current = null;
   };
 
   const handleDragCancel = () => {
     setActiveFootage(null);
     setActiveFootageSize(null);
+    setHoveredDropRowIndex(null);
+    setIsDragOverTimeline(false);
+    setDragClient(null);
+    dragStartClientRef.current = null;
   };
+
+  const ghostPreview = useMemo(() => {
+    if (!activeFootage) return null;
+    if (!isDragOverTimeline) return null;
+    const pt = dragClient;
+    if (!pt) return null;
+    const rawRow = rowIndexFromClientY(pt.y);
+    const laneRow = pickLaneForItem(activeFootage, rawRow);
+    if (laneRow == null) return null;
+    const desiredStart = timeFromClientX(pt.x);
+    const bumpedStart = computeBumpedStart(activeFootage, desiredStart, laneRow, dataRef.current);
+    const duration = activeFootage.defaultDuration ?? 10;
+    return {
+      laneRow,
+      desiredStart,
+      start: bumpedStart,
+      end: bumpedStart + duration,
+      duration,
+      kind: activeFootage.kind,
+    };
+  }, [activeFootage, isDragOverTimeline, dragClient, laneScrollLeft, laneScrollTop, ROW_HEIGHT_PX]);
 
   const handleTimelinePointerDown = (e: React.PointerEvent) => {
     if (!isMobile) return;
@@ -983,15 +1224,72 @@ const TimelineEditor = () => {
           onPointerMove={handleTimelinePointerMove}
           onPointerUp={handleTimelinePointerUp}
         >
+          <div
+            className="timeline-lane-labels"
+            style={{
+              top: editAreaOffsetTop,
+              transform: `translateY(${-laneScrollTop}px)`,
+              height: ROW_HEIGHT_PX * LANE_LABELS.length,
+            }}
+          >
+            {LANE_LABELS.map((label, idx) => (
+              <div
+                key={label}
+                className={`timeline-lane-label${hoveredDropRowIndex === idx ? ' is-hover' : ''}`}
+                style={{ height: ROW_HEIGHT_PX }}
+              >
+                {label}
+              </div>
+            ))}
+          </div>
+
+          {ghostPreview ? (
+            <div className="timeline-ghost-layer" style={{ top: editAreaOffsetTop, left: editAreaOffsetLeft }}>
+              {(() => {
+                const pxPerSec = scaleWidth / scale;
+                const width = ghostPreview.duration * pxPerSec;
+                const left = timeToPixel(ghostPreview.start) - laneScrollLeft;
+                const top = ghostPreview.laneRow * ROW_HEIGHT_PX - laneScrollTop;
+
+                const clips: Array<{ row: number; kind: 'video' | 'audio' }> = [];
+                if (ghostPreview.kind === 'video') {
+                  clips.push({ row: ghostPreview.laneRow, kind: 'video' });
+                  clips.push({ row: pairedAudioRowForVideoRow(ghostPreview.laneRow), kind: 'audio' });
+                } else {
+                  clips.push({ row: ghostPreview.laneRow, kind: 'audio' });
+                }
+
+                return clips.map((c) => (
+                  <div
+                    key={`${c.kind}-${c.row}`}
+                    className={`timeline-ghost-clip${c.kind === 'video' ? ' is-video' : ' is-audio'}`}
+                    style={{
+                      left,
+                      top: c.row * ROW_HEIGHT_PX - laneScrollTop,
+                      width,
+                      height: ROW_HEIGHT_PX,
+                    }}
+                  />
+                ));
+              })()}
+            </div>
+          ) : null}
+
           <Timeline
             scale={scale}
             scaleWidth={scaleWidth}
             startLeft={startLeft}
-            rowHeight={isMobile ? 48 : undefined}
+            rowHeight={ROW_HEIGHT_PX}
             autoScroll={true}
             ref={timelineState}
             editorData={editorDataForRender}
             effects={mockEffect}
+            onScroll={(params) => {
+              const st = Number((params as any)?.scrollTop ?? 0);
+              const sl = Number((params as any)?.scrollLeft ?? 0);
+              if (Number.isFinite(st)) setLaneScrollTop(st);
+              if (Number.isFinite(sl)) setLaneScrollLeft(sl);
+            }}
             onClickTimeArea={(_time, _e) => {
               setSelectedActionId(null);
               return undefined;

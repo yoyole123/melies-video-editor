@@ -157,18 +157,7 @@ export const mockData: CusTomTimelineRow[] = [
   },
   {
     id: '1',
-    actions: [
-      {
-        id: 'action0-audio',
-        start: 0,
-        end: 10,
-        effectId: 'effect2',
-        data: {
-          src: '/footage/Big_Buck_Bunny_720_10s_5MB.mp4',
-          name: 'Big Buck Bunny (10s)',
-        },
-      },
-    ],
+    actions: [],
   },
   {
     id: '2',
@@ -184,5 +173,9 @@ export const mockData: CusTomTimelineRow[] = [
         },
       },
     ],
+  },
+  {
+    id: '3',
+    actions: [],
   },
 ];
