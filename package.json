@@ -1,12 +1,39 @@
 {
-  "name": "my-video-editor4",
-  "private": true,
-  "version": "0.0.0",
+  "name": "Melies-video-editor",
+  "version": "0.1.0",
+  "description": "A React video timeline editor GUI built on @xzdarcy/react-timeline-editor.",
   "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "timeline",
+    "video",
+    "editor",
+    "react",
+    "base44"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/types/lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/lib/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./style.css": "./dist/style.css"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": [
+    "**/*.css"
+  ],
   "scripts": {
     "dev": "vite --host",
     "dev:server": "node server/index.mjs",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && tsc -p tsconfig.types.json",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -16,24 +43,29 @@
     "@xzdarcy/react-timeline-editor": "0.1.8",
     "antd": "4.21.6",
     "howler": "2.2.3",
-    "less": "^4.5.1",
     "lodash": "4.17.21",
-    "lottie-web": "5.10.0",
-    "express": "^4.21.2",
-    "multer": "^2.0.2",
-    "react": "^19.2.3",
-    "react-dom": "^19.2.3"
+    "lottie-web": "5.10.0"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "@types/node": "^24.10.1",
-    "@types/react": "^19.2.5",
-    "@types/react-dom": "^19.2.3",
+    "@types/howler": "^2.2.12",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^5.1.1",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
+    "express": "^4.21.2",
     "globals": "^16.5.0",
+    "less": "^4.5.1",
+    "multer": "^2.0.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4"

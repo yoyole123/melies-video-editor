@@ -1,0 +1,554 @@
+---
+title: "Base44 Guide: Recreate react-timeline-editor Video Editor (with export server)"
+---
+
+# Base44 implementation guide (step-by-step)
+
+This guide is written for **Base44** to recreate the editor **from scratch** inside an existing Base44 app.
+
+It is **self-contained**: you do not need access to any external repo to implement this. The full copy/paste code listings live in:
+
+- `docs/base44_recreate_timeline_editor_appendix.txt`
+
+Goal: starting from a basic `@xzdarcy/react-timeline-editor` usage, recreate **this project’s current editor** as closely as possible, including:
+
+- Footage bin (video + audio items)
+- Drag-and-drop from footage bin → timeline
+- Drop “ghost preview” + row hover highlight
+- 4 fixed lanes: `V1`, `V2`, `A1`, `A2`
+- Linked clips: video lane clip + its embedded audio lane clip (move/trim together)
+- Clip selection (tap/click)
+- Delete selected clip (deletes linked pair if linked)
+- Split selected clip at playhead (splits linked pair if linked; left segment remains selected)
+- Undo/Redo (stack size N=5), including gesture-based history capture
+- Cursor magnet / “sticky” snap to playhead during drag/resize
+- Mobile compatibility:
+  - press-hold drag start on touch
+  - tap-to-select and tap empty space to set playhead
+  - mobile cursor dragging shim
+- Export to `export.mp4` via a server-side ffmpeg route (matching the `/export` contract defined in this guide)
+
+If any step doesn’t fit Base44’s runtime (frontend bundler, backend capabilities, auth/storage API), Base44 should **re-evaluate** and implement the **same behavior** with the closest Base44-native equivalent.
+
+---
+
+## 0) What you need (no repo access required)
+
+Everything you need is in two files:
+
+- This guide (step-by-step decisions + behavior notes)
+- The appendix file with full copy/paste source code:
+  - `docs/base44_recreate_timeline_editor_appendix.txt`
+
+If you want the fastest path: create the modules listed in section 3 and copy each file verbatim from the appendix sections labeled `File: ...`.
+
+---
+
+## 1) Base44 prerequisites (NPM packages + public assets)
+
+### 1.1 Install NPM packages
+
+Install these dependencies (versions matter for parity):
+
+- `@xzdarcy/react-timeline-editor@0.1.8`
+- `@dnd-kit/core@^6.3.1`
+- `antd@4.21.6`
+- `howler@2.2.3`
+
+Backend-side (if Base44 supports Node backend routes with these libs):
+
+- `express@^4.21.2`
+- `multer@^2.0.2`
+
+If Base44 backend doesn’t support Express/multer directly, Base44 should still implement the same behavior using its own HTTP routing and multipart parsing.
+
+### 1.2 Copy required static assets
+
+This editor references icons and other assets from the public root:
+
+- `/bin.png`
+- `/split.png`
+- `/undo.png`
+- `/redo.png`
+- `/play-button.png`
+- `/pause-button.png`
+- `/assets/soundWave.png`
+
+Place these into Base44’s public/static asset system so they resolve at the same paths.
+
+---
+
+## 2) Base44 data mapping (Movie storyboard → Footage bin → Timeline)
+
+Your Base44 app already has:
+
+- `components/movie/FilmingManager.jsx`: uploads files to Base44 storage and stores URLs on the Movie.
+- `entities/Movie.json`: stores URLs in `storyboard[].takes` and `storyboard[].selected_take_url`.
+- `components/movie/EditingSuite.jsx`: reads stored URLs to present editing.
+
+### 2.1 Storage URL rules (Base44)
+
+- **Public** uploads via `UploadFile`: returned URL is stable and may be used directly as `action.data.src`.
+- **Private** uploads via `UploadPrivateFile`: you receive `file_uri` which requires `CreateFileSignedUrl` to get a temporary URL.
+
+**Important consequence:**
+
+- This implementation uses `action.data.src` as both:
+  1) the playable URL (for playback/preload), and
+  2) the identity key for export (filename = `encodeURIComponent(src)`).
+
+If Base44 uses **temporary signed URLs** as `src`, exports can break later when URLs expire, and identity becomes unstable.
+
+### 2.2 Recommended Base44 approach (stable identity + playable URL)
+
+To keep behavior consistent and reduce breakage:
+
+- Store a stable identity in actions: `action.data.assetKey` (string)
+  - For public uploads: you can set `assetKey = stableUrl`.
+  - For private uploads: set `assetKey = file_uri`.
+- Store a playable URL in actions: `action.data.src` (string)
+  - For public uploads: `src = stableUrl`.
+  - For private uploads: `src = CreateFileSignedUrl(file_uri)`.
+
+Then, on EditingSuite load (and before export), refresh `src` for any private `assetKey` values.
+
+If Base44 cannot store extra fields in the timeline action, Base44 should implement an equivalent mapping layer outside the timeline data.
+
+---
+
+## 3) Create the Base44 editor module set (JavaScript)
+
+Base44 is JavaScript-based (React + JSX). This implementation uses Ant Design + custom CSS. For parity, prefer **keeping AntD + custom CSS**.
+
+Create the following modules in Base44 (paths are suggestions; Base44 should adapt to its project structure):
+
+- `components/movie/timeline/timelineConstants.js`
+- `components/movie/timeline/types.js` (JSDoc typedefs)
+- `components/movie/timeline/mediaCache.js`
+- `components/movie/timeline/useCoarsePointer.js`
+- `components/movie/timeline/audioControl.js`
+- `components/movie/timeline/videoControl.js`
+- `components/movie/timeline/effects.js`
+- `components/movie/timeline/customRenders.jsx`
+- `components/movie/timeline/TimelinePlayer.jsx`
+- `components/movie/timeline/TimelineEditor.jsx`
+- `components/movie/timeline/timelineEditor.css`
+
+The full, exact copy/paste code is provided in `docs/base44_recreate_timeline_editor_appendix.txt`.
+
+The sections below remain as behavior notes and smaller snippets (helpful if you want to re-implement rather than copy/paste).
+
+---
+
+## 4) Types: timeline actions with link + offset
+
+In JavaScript, we keep the same data shape but express it as JSDoc typedefs.
+
+Copy `components/movie/timeline/types.js` from the appendix.
+
+---
+
+## 5) Media cache (blob URL preloading)
+
+Copy `components/movie/timeline/mediaCache.js` from the appendix.
+
+---
+
+## 6) Mobile detection: coarse pointer hook
+
+Create `useCoarsePointer.js` (or copy from the appendix section `File: components/movie/timeline/useCoarsePointer.js`):
+
+```ts
+import { useEffect, useState } from 'react';
+
+export function useCoarsePointer() {
+  const getInitial = () => {
+    if (typeof window === 'undefined') return false;
+    return typeof navigator !== 'undefined' && (navigator.maxTouchPoints ?? 0) > 0;
+  };
+
+  const [isCoarse, setIsCoarse] = useState(getInitial);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+
+    const mq = window.matchMedia('(pointer: coarse)');
+    const update = () => setIsCoarse(Boolean(mq.matches) || getInitial());
+
+    update();
+
+    if (typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', update);
+      return () => mq.removeEventListener('change', update);
+    }
+
+    mq.addListener(update);
+    return () => mq.removeListener(update);
+  }, []);
+
+  return isCoarse;
+}
+```
+
+---
+
+## 7) Audio + Video playback controllers
+
+### 7.1 `videoControl.js`
+
+Create `videoControl.js` (or copy from the appendix section `File: components/movie/timeline/videoControl.js`):
+
+- `attach(el)`
+- `setActive(active)`
+- `setSource(src)`
+- `warm(src)`
+- `setRate(rate)`
+- `seek(time, {force})`
+- `play()` / `pause()`
+- `bindEngine(engine, actionStart)` and `unbindEngine()`
+
+This enables:
+
+- black preview between clips
+- smoother playback with reduced seeking while playing
+- optional driving the engine time from video frames
+
+### 7.2 `audioControl.js` (Howler)
+
+Create `audioControl.js` (or copy from the appendix section `File: components/movie/timeline/audioControl.js`).
+
+Important Base44 note:
+
+- Howler format inference requires file extension. If Base44 signed URLs remove extensions, preserve extension via metadata or pass `format` explicitly.
+
+---
+
+## 8) Timeline effects (engine callbacks)
+
+Create `effects.js` (or copy from the appendix section `File: components/movie/timeline/effects.js`). The important part is:
+
+- `effect1`: video
+- `effect0`: audio
+- `effect2`: embedded audio from the video source
+
+Also ensure **split offset** is applied:
+
+- video seeks to `time - action.start + offset`
+- audio seeks to `time - action.start + offset`
+
+---
+
+## 9) Custom action rendering (needed for mobile tap-to-select)
+
+Create `customRenders.jsx` (or copy from the appendix section `File: components/movie/timeline/customRenders.jsx`).
+
+Critical detail: the root element must include:
+
+- `data-action-id={action.id}`
+- `data-row-id={row.id}`
+
+This is how mobile pointer-up selection finds which clip was tapped.
+
+---
+
+## 10) Timeline toolbar (player) including export
+
+Create `TimelinePlayer.jsx` (or copy from the appendix section `File: components/movie/timeline/TimelinePlayer.jsx`). Preserve:
+
+- Synthetic click de-bounce (ignore click if pointer-up happened recently)
+- Split enablement logic (`time > start && time < end`)
+- `handleExport()` contract:
+  - `form.append('timeline', JSON.stringify({ editorData }))`
+  - for each unique `action.data.src`: fetch it and attach as multipart file with filename `encodeURIComponent(src)`
+  - `fetch('/export', { method: 'POST', body: form })`
+
+Base44 adaptation:
+
+- If Base44 export backend route is not `/export`, adjust only the URL.
+- If Base44 uses private assets, ensure signed URLs are fresh before export.
+
+---
+
+## 11) The editor component (core): DnD, selection, delete/split, undo/redo, sticky cursor, mobile
+
+Create `TimelineEditor.jsx` (or copy from the appendix section `File: components/movie/timeline/TimelineEditor.jsx`).
+
+### 11.1 Constants + lane model
+
+Preserve:
+
+- `const MAX_HISTORY = 5;`
+- lane indexes + labels:
+  - `VIDEO_ROW_INDEXES = [0,1]`
+  - `AUDIO_ROW_INDEXES = [2,3]`
+  - `LANE_LABELS = ['V1','V2','A1','A2']`
+- row height:
+  - `ROW_HEIGHT_PX = isMobile ? 48 : 32`
+
+### 11.2 Footage bin data source (Base44)
+
+This implementation’s footage bin is a list of `FootageItem` objects. In Base44, you should build that list from your Movie storyboard (public URLs or signed URLs).
+
+In Base44, replace it with items derived from Movie storyboard takes:
+
+- For each shot, select either:
+  - `storyboard[i].selected_take_url` (preferred), or
+  - the first item in `storyboard[i].takes`
+
+Then map to:
+
+```ts
+export type FootageItem = {
+  id: string;
+  kind: 'video' | 'audio';
+  name: string;
+  src: string;
+  previewSrc?: string;
+  defaultDuration?: number;
+  assetKey?: string; // recommended
+};
+```
+
+For private files, set `assetKey = file_uri` and `src = signedUrl`.
+
+### 11.3 Insertion logic (video + embedded audio linked)
+
+Port `insertActionAtTime()` exactly (see the appendix `TimelineEditor.jsx`). Key behavior:
+
+- Pause playback before editing
+- Push one history snapshot
+- Ensure 4 rows exist
+- If `item.kind === 'video'`:
+  - insert a video clip (`effectId: 'effect1'`) into nearest video lane
+  - insert an embedded-audio clip (`effectId: 'effect2'`) into paired audio lane
+  - both share `data.linkId`
+- If `item.kind === 'audio'`:
+  - insert `effectId: 'effect0'` into nearest audio lane
+- Bump start forward to avoid overlaps (in all affected rows)
+
+### 11.4 Selection (required for delete/split)
+
+Port this exactly:
+
+- `const [selectedActionId, setSelectedActionId] = useState<string | null>(null);`
+- Render-time selection injection:
+  - set `action.selected = action.id === selectedActionId`
+  - keep canonical timeline data clean
+
+Wire selection events:
+
+- Desktop: `onClickActionOnly` sets selection
+- Clicking empty time area or row clears selection
+- Mobile: pointer-up tap selection uses `[data-action-id]` lookup
+
+### 11.5 Delete selected clip
+
+Port `deleteSelectedClip()` exactly:
+
+- Pause if playing
+- Push history
+- If selected action has `data.linkId`, delete all actions with same `linkId`
+- Clear selection
+
+### 11.6 Split selected clip at cursor
+
+Port `splitSelectedClipAtCursor()` exactly:
+
+- Only split when `start < cursorTime < end`
+- Pause if playing
+- Push history
+- Keep left segment selected by keeping original action id
+- Create right action with new id
+- Compute and store `data.offset` so playback continues from correct in-point
+- If linked pair exists, split both and create two new `linkId`s (left + right)
+
+### 11.7 Undo/redo (N=5)
+
+Port the history model:
+
+- `past: TimelineRow[][]`
+- `future: TimelineRow[][]`
+- `pendingHistoryBeforeRef` + `pendingHistorySignatureRef` to capture a single entry for drag/resize
+
+Undo/redo behavior:
+
+- pause if playing
+- clear selection
+- preserve cursor time (read time, restore with `setTime` in `requestAnimationFrame`)
+
+### 11.8 Sticky cursor snapping during drag/resize
+
+Port the “cursor magnet” logic:
+
+- thresholds:
+  - `CURSOR_SNAP_THRESHOLD_SEC = 0.9`
+  - `CURSOR_SNAP_RELEASE_SEC = 1.05`
+- `maybeSnapToCursorForMove()` and `maybeSnapToCursorForResize()`
+- “takeover mode” via global pointer tracking:
+  - attach `pointermove`/`pointerup` listeners
+  - once snapped, return `false` from `onActionMoving`/`onActionResizing` so the library doesn’t apply its own internal drag
+
+### 11.9 Linked clip synchronization + overlap prevention
+
+Preserve:
+
+- `findLinkedPartner()`
+- `setStartEndForActionAndLinked()`
+- overlap checks on both the current row and partner row
+
+### 11.10 Drag-and-drop from bin → timeline + ghost preview
+
+Port:
+
+- DnD kit sensors:
+  - pointer: `{ distance: 6 }`
+  - touch: `{ delay: 180, tolerance: 6 }`
+- droppable: `useDroppable({ id: 'timeline-drop' })`
+- time conversion:
+  - `timeFromClientX(clientX)` uses `.timeline-editor-edit-area` bounds + `.ReactVirtualized__Grid.scrollLeft`
+- row conversion:
+  - `rowIndexFromClientY(clientY)` uses `.timeline-editor-edit-area` bounds + `laneScrollTop` + `ROW_HEIGHT_PX`
+
+Ghost preview requirements:
+
+- When dragging over timeline, compute:
+  - desiredStart from pointer
+  - bumpedStart via `computeBumpedStart()`
+- Render `.timeline-ghost-clip` blocks in the target lane(s)
+  - if video: show both video lane + paired audio lane
+
+---
+
+## 12) Styling
+
+This implementation uses Ant Design CSS and custom styles. The appendix provides a plain-CSS version as `timelineEditor.css`.
+
+If Base44 doesn’t support LESS, copy the rules into a plain CSS file and remove LESS-specific functions.
+
+Minimum required styling for correct UX:
+
+- Selected clip highlight (targets `.timeline-editor-action.timeline-editor-action-selected`)
+- Disable touch gestures stealing clip drag (`touch-action: none` on actions)
+- Lane label overlay
+- Ghost preview overlay
+- Row hover highlight (`.timeline-editor-edit-row.dnd-drop-hover`)
+- Mobile cursor hit target
+- Toolbar layout and button disabled state
+
+Base44 should prefer not to redesign; replicate sizing and class names.
+
+---
+
+## 13) Export backend (ffmpeg) – recommended approach
+
+Base44 currently has a placeholder util that simulates FFmpeg.
+
+To match this implementation, implement a **server-side ffmpeg** endpoint with the same contract as the appendix’s `server/exportServer.mjs`.
+
+### 13.1 Endpoint contract (must match)
+
+- `POST /export`
+- Request: `multipart/form-data`
+  - field: `timeline` = JSON string: `{ editorData: TimelineRow[] }`
+  - field: `assets` = multiple files (one per unique action.data.src)
+    - filename MUST be `encodeURIComponent(src)`
+- Response: `export.mp4` binary download
+
+### 13.2 Server behavior (exact semantics)
+
+Match these semantics from the appendix export server:
+
+- Video actions: `effectId === 'effect1'`
+- Audio actions: `effectId === 'effect0' || effectId === 'effect2'`
+- Total duration = max end time across all actions
+- Video:
+  - clips are concatenated with black gaps
+  - overlaps are clamped by time ordering
+- Audio:
+  - overlapping audio is mixed using `amix`
+
+### 13.3 Base44 adaptation for private files (optional but strongly recommended)
+
+Because `src` may be a short-lived signed URL, prefer using stable keys.
+
+If Base44 can change the contract safely:
+
+- Send assets keyed by `assetKey` instead of `src`:
+  - filename = `encodeURIComponent(assetKey)`
+  - server maps `assetKey` → uploaded file
+  - server reads action.data.assetKey instead of action.data.src
+
+If Base44 cannot change the contract, ensure:
+
+- signed URLs are freshly generated immediately before export
+- export happens quickly enough that URLs remain valid
+
+### 13.4 Note about split offset parity
+
+The editor playback uses `action.data.offset` for split clips.
+
+The provided export server does **not** apply offsets; it always trims from `start=0` for each source.
+
+For strict “match repo” parity, keep this behavior.
+
+If Base44 wants export to match playback more accurately, Base44 can extend ffmpeg trim start to include `offset`:
+
+- For each clip segment: `trim=start=<offset>:duration=<dur>` (video)
+- For each audio action: `atrim=start=<offset>:duration=<dur>` (audio)
+
+This is a deliberate decision; if any assumptions don’t fit Base44’s pipeline, re-evaluate.
+
+---
+
+## 14) Final wiring inside Base44 EditingSuite
+
+In `components/movie/EditingSuite.jsx/tsx`:
+
+1) Load the Movie entity
+2) Extract footage sources (public URLs or signed URLs)
+3) Build initial timeline `editorData` (4 lanes)
+4) Render `<TimelineEditor movie={movie} initialFootageItems={...} />`
+
+Persisting edits:
+
+- This implementation keeps timeline in local state.
+- If Base44 should persist the timeline to the Movie entity, store `editorData` (clean form) and `selectedActionId` separately.
+
+---
+
+## 15) Acceptance checklist (should match this implementation)
+
+- Drag a video from bin → drops into nearest V lane and creates linked audio in paired A lane
+- Drag an audio item → drops into nearest A lane
+- While dragging over timeline:
+  - hovered row highlights
+  - ghost preview shows the bumped start position
+- Tap/click clip selects it (visual highlight)
+- Delete removes selected clip; if linked, removes both
+- Split at cursor creates left+right clips; left stays selected; linked pair splits too
+- Undo/redo works up to 5 steps; selection does not create history steps
+- While dragging/resizing near playhead, clip edge “sticks” (snaps) and can be pulled away
+- Export returns `export.mp4` using server-side ffmpeg
+
+---
+
+## Appendix A: dependency list for parity
+
+Frontend:
+
+- `@xzdarcy/react-timeline-editor@0.1.8`
+- `@dnd-kit/core@^6.3.1`
+- `antd@4.21.6`
+- `howler@2.2.3`
+
+Backend:
+
+- `express@^4.21.2`
+- `multer@^2.0.2`
+
+---
+
+## Appendix: full copy/paste code
+
+See `docs/base44_recreate_timeline_editor_appendix.txt`.
+

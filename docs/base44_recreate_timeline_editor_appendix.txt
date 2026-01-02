@@ -1,0 +1,3314 @@
+# Appendix: Copy/paste code (self-contained, JavaScript/JSX)
+
+This appendix is intended to be sufficient for Base44 to recreate the editor **without access to any external repo**.
+
+Instructions:
+- Create the files listed in the guide (paths can be adjusted to Base44’s conventions).
+- Copy each section below into the corresponding file.
+
+---
+
+## File: `components/movie/timeline/timelineConstants.js`
+
+```js
+export const scaleWidth = 160;
+export const scale = 5;
+export const startLeft = 20;
+
+export const MAX_HISTORY = 5;
+
+// Lane model (fixed)
+export const VIDEO_ROW_INDEXES = [0, 1];
+export const AUDIO_ROW_INDEXES = [2, 3];
+export const LANE_LABELS = ['V1', 'V2', 'A1', 'A2'];
+```
+
+---
+
+## File: `components/movie/timeline/types.js`
+
+```js
+/**
+ * @typedef {import('@xzdarcy/react-timeline-editor').TimelineAction} TimelineAction
+ * @typedef {import('@xzdarcy/react-timeline-editor').TimelineRow} TimelineRow
+ */
+
+/** @typedef {'video' | 'audio'} FootageKind */
+
+/**
+ * @typedef {Object} FootageItem
+ * @property {string} id
+ * @property {FootageKind} kind
+ * @property {string} name
+ * @property {string} src Playable URL (public stable URL OR signed URL)
+ * @property {string=} previewSrc Optional lower-res/proxy source for smoother preview playback.
+ * @property {number=} defaultDuration
+ * @property {string=} assetKey
+ *   Base44 recommended stable identity:
+ *   - public file: can be the same as src
+ *   - private file: use file_uri
+ */
+
+/**
+ * @typedef {TimelineAction & {
+ *   data: {
+ *     src: string,
+ *     previewSrc: (string|undefined),
+ *     name: string,
+ *     linkId: (string|undefined),
+ *     offset: (number|undefined),
+ *     assetKey: (string|undefined),
+ *   }
+ * }} CustomTimelineAction
+ */
+
+/** @typedef {TimelineRow & { actions: CustomTimelineAction[] }} CustomTimelineRow */
+
+/** @returns {CustomTimelineRow[]} */
+export const createEmptyEditorData = () => [
+  { id: '0', actions: [] },
+  { id: '1', actions: [] },
+  { id: '2', actions: [] },
+  { id: '3', actions: [] },
+];
+```
+
+---
+
+## File: `components/movie/timeline/mediaCache.js`
+
+```js
+/** @typedef {'video' | 'audio' | 'other'} MediaKind */
+
+/** @param {string} src @returns {MediaKind} */
+export const guessKind = (src) => {
+  const lower = src.toLowerCase();
+  if (lower.endsWith('.mp4') || lower.endsWith('.webm') || lower.endsWith('.mov') || lower.endsWith('.m4v')) return 'video';
+  if (lower.endsWith('.mp3') || lower.endsWith('.wav') || lower.endsWith('.ogg') || lower.endsWith('.m4a') || lower.endsWith('.aac')) return 'audio';
+  return 'other';
+};
+
+class MediaCache {
+  constructor() {
+    /** @type {Map<string, string>} */
+    this.blobUrlBySrc = new Map();
+    /** @type {Map<string, Promise<string>>} */
+    this.pendingBySrc = new Map();
+  }
+
+  /**
+   * Preloads a URL into memory and returns a blob: URL.
+   * Useful to avoid buffering/stalls when seeking frequently.
+   */
+  /** @param {string} src @returns {Promise<string>} */
+  async preloadToBlobUrl(src) {
+    if (!src) return src;
+    const existing = this.blobUrlBySrc.get(src);
+    if (existing) return existing;
+
+    const pending = this.pendingBySrc.get(src);
+    if (pending) return pending;
+
+    const task = (async () => {
+      const response = await fetch(src, { cache: 'force-cache' });
+      if (!response.ok) throw new Error(`Failed to fetch ${src}: ${response.status}`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      this.blobUrlBySrc.set(src, url);
+      return url;
+    })()
+      .catch((err) => {
+        // If preload fails, fall back to the original src.
+        console.warn('[mediaCache] preload failed:', src, err);
+        return src;
+      })
+      .finally(() => {
+        this.pendingBySrc.delete(src);
+      });
+
+    this.pendingBySrc.set(src, task);
+    return task;
+  }
+
+  /** Returns a blob URL if available, otherwise the original `src`. */
+  /** @param {string} src @returns {string} */
+  resolve(src) {
+    return this.blobUrlBySrc.get(src) ?? src;
+  }
+
+  /** Starts preload in background (non-blocking). */
+  /** @param {string} src */
+  warm(src) {
+    void this.preloadToBlobUrl(src);
+  }
+
+  /** Convenience: preload all unique action.data.src from editor data. */
+  /** @param {unknown} editorData */
+  warmFromEditorData(editorData) {
+    const srcs = new Set();
+    const rows = Array.isArray(editorData) ? editorData : [];
+
+    for (const row of rows) {
+      const actions = row?.actions;
+      if (!Array.isArray(actions)) continue;
+      for (const action of actions) {
+        const src = action?.data?.src;
+        if (typeof src === 'string' && src) srcs.add(src);
+      }
+    }
+
+    for (const src of srcs) {
+      // For this project, eager preloading both audio and video is acceptable.
+      const kind = guessKind(src);
+      if (kind === 'video' || kind === 'audio') this.warm(src);
+    }
+  }
+}
+
+const mediaCache = new MediaCache();
+export default mediaCache;
+```
+
+---
+
+## File: `components/movie/timeline/useCoarsePointer.js`
+
+```js
+import { useEffect, useState } from 'react';
+
+export function useCoarsePointer() {
+  const getInitial = () => {
+    if (typeof window === 'undefined') return false;
+    return typeof navigator !== 'undefined' && (navigator.maxTouchPoints ?? 0) > 0;
+  };
+
+  const [isCoarse, setIsCoarse] = useState(getInitial);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+
+    const mq = window.matchMedia('(pointer: coarse)');
+    const update = () => setIsCoarse(Boolean(mq.matches) || getInitial());
+
+    update();
+
+    // Safari < 14 uses addListener/removeListener.
+    if (typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', update);
+      return () => mq.removeEventListener('change', update);
+    }
+
+    mq.addListener(update);
+    return () => mq.removeListener(update);
+  }, []);
+
+  return isCoarse;
+}
+```
+
+---
+
+## File: `components/movie/timeline/videoControl.js`
+
+```js
+import mediaCache from './mediaCache';
+
+class VideoControl {
+  constructor() {
+    /** @type {HTMLVideoElement | null} */
+    this.videoEl = null;
+    /** @type {string | null} */
+    this.currentSrc = null;
+    this.lastSeekAtMs = 0;
+    /** @type {number | null} */
+    this.lastRate = null;
+    this.isActive = false;
+
+    /** @type {import('@xzdarcy/react-timeline-editor').TimelineEngine | null} */
+    this.boundEngine = null;
+    this.boundActionStart = 0;
+    /** @type {number | null} */
+    this.vfcHandle = null;
+    /** @type {number | null} */
+    this.rafHandle = null;
+  }
+
+  /** @param {HTMLVideoElement | null} el */
+  attach(el) {
+    this.videoEl = el;
+    this.currentSrc = el?.currentSrc || el?.getAttribute('src') || null;
+    this.lastSeekAtMs = 0;
+    this.lastRate = null;
+    this.unbindEngine();
+
+    // Default to inactive (black) until a video action becomes active.
+    this.setActive(false);
+  }
+
+  /** @param {boolean} active */
+  setActive(active) {
+    this.isActive = active;
+    if (!this.videoEl) return;
+    // Show black when inactive by hiding the video element.
+    this.videoEl.style.opacity = active ? '1' : '0';
+  }
+
+  /** @param {import('@xzdarcy/react-timeline-editor').TimelineEngine} engine @param {number} actionStart */
+  bindEngine(engine, actionStart) {
+    this.unbindEngine();
+    this.boundEngine = engine;
+    this.boundActionStart = actionStart;
+    this.tickFromVideo();
+  }
+
+  unbindEngine() {
+    const v = this.videoEl;
+    if (this.vfcHandle != null && v?.cancelVideoFrameCallback) {
+      try {
+        v.cancelVideoFrameCallback(this.vfcHandle);
+      } catch {
+        // ignore
+      }
+    }
+    if (this.rafHandle != null) {
+      cancelAnimationFrame(this.rafHandle);
+    }
+    this.vfcHandle = null;
+    this.rafHandle = null;
+    this.boundEngine = null;
+  }
+
+  tickFromVideo = () => {
+    if (!this.videoEl || !this.boundEngine) return;
+    if (this.videoEl.paused) return;
+
+    const t = this.boundActionStart + this.videoEl.currentTime;
+    // Deadzone to reduce event spam.
+    if (Math.abs(this.boundEngine.getTime() - t) > 0.03) {
+      // Mark as tick-driven so listeners treat it like playback.
+      this.boundEngine?.setTime?.(t, true);
+    }
+
+    const v = this.videoEl;
+    if (v?.requestVideoFrameCallback) {
+      this.vfcHandle = v.requestVideoFrameCallback(() => this.tickFromVideo());
+    } else {
+      this.rafHandle = requestAnimationFrame(() => this.tickFromVideo());
+    }
+  };
+
+  /** @param {string} src */
+  setSource(src) {
+    if (!this.videoEl) return;
+    if (!src) return;
+
+    // Prefer preloaded blob URLs when available.
+    const resolved = mediaCache.resolve(src);
+
+    const existing = this.videoEl.currentSrc || this.videoEl.getAttribute('src') || '';
+    if (existing === resolved || this.currentSrc === resolved) return;
+
+    this.currentSrc = resolved;
+    this.videoEl.preload = 'auto';
+    this.videoEl.src = resolved;
+    try {
+      this.videoEl.load();
+    } catch {
+      // ignore
+    }
+  }
+
+  /** @param {string} src */
+  warm(src) {
+    if (!src) return;
+    mediaCache.warm(src);
+  }
+
+  /** @param {number} rate */
+  setRate(rate) {
+    if (!this.videoEl) return;
+    if (this.lastRate === rate) return;
+    this.lastRate = rate;
+    this.videoEl.playbackRate = rate;
+  }
+
+  /**
+   * Sync the video to a desired timeline time.
+   * To avoid buffering/stutters, we only seek when drift is large or when paused/scrubbing.
+   */
+  /** @param {number} time @param {{force: (boolean|undefined)}=} opts */
+  seek(time, opts) {
+    if (!this.videoEl) return;
+    try {
+      const now = performance.now();
+      const force = opts?.force === true;
+      const current = this.videoEl.currentTime;
+
+      if (!force && !this.videoEl.paused) {
+        const drift = Math.abs(current - time);
+        if (drift < 0.12) return;
+        if (now - this.lastSeekAtMs < 150) return;
+      }
+
+      const duration = this.videoEl.duration;
+      if (Number.isFinite(duration) && duration > 0) {
+        this.videoEl.currentTime = Math.min(time, Math.max(0, duration - 0.05));
+      } else {
+        this.videoEl.currentTime = Math.max(0, time);
+      }
+
+      this.lastSeekAtMs = now;
+    } catch {
+      // ignore
+    }
+  }
+
+  async play() {
+    if (!this.videoEl) return;
+    try {
+      await this.videoEl.play();
+      if (this.boundEngine) this.tickFromVideo();
+    } catch {
+      // Autoplay restrictions can block play() until user gesture.
+    }
+  }
+
+  pause() {
+    if (!this.videoEl) return;
+    this.videoEl.pause();
+  }
+}
+
+export default new VideoControl();
+```
+
+---
+
+## File: `components/movie/timeline/audioControl.js`
+
+```js
+import { Howl, Howler } from 'howler';
+import mediaCache from './mediaCache';
+
+/** @param {string} src @returns {string | undefined} */
+const inferHowlerFormat = (src) => {
+  if (!src) return undefined;
+  const clean = src.split('#')[0].split('?')[0];
+  const lower = clean.toLowerCase();
+  const dot = lower.lastIndexOf('.');
+  if (dot < 0) return undefined;
+  const ext = lower.slice(dot + 1);
+  if (!ext) return undefined;
+
+  if (ext === 'm4a' || ext === 'm4v') return 'mp4';
+  return ext;
+};
+
+class AudioControl {
+  constructor() {
+    /** @type {Record<string, Howl>} */
+    this.howlBySrc = {};
+    /**
+     * @type {Record<string, {
+     *   src: string,
+     *   startTime: number,
+     *   offset: number,
+     *   soundId: number,
+     *   engine: import('@xzdarcy/react-timeline-editor').TimelineEngine,
+     *   lastResyncAtMs: number,
+     *   time: (((data: { time: number }) => void) | undefined),
+     *   rate: (((data: { rate: number }) => void) | undefined),
+     * }>} */
+    this.activeByActionId = {};
+  }
+
+  /** @param {string} src @returns {Howl} */
+  getHowl(src) {
+    const resolved = mediaCache.resolve(src);
+
+    // Howler cannot reliably infer format from blob: URLs (no extension).
+    // Prefer the original URL (with extension) for playback.
+    const urlForHowler = resolved.startsWith('blob:') ? src : resolved;
+    const cacheKey = urlForHowler;
+    if (this.howlBySrc[cacheKey]) return this.howlBySrc[cacheKey];
+
+    const format = inferHowlerFormat(src);
+    const howl = new Howl({
+      src: [urlForHowler],
+      format: format ? [format] : undefined,
+      loop: true,
+      autoplay: false,
+      preload: true,
+    });
+    this.howlBySrc[cacheKey] = howl;
+    return howl;
+  }
+
+  /**
+   * Ensure the underlying WebAudio context is resumed.
+   * iOS Safari blocks audio until a user gesture resumes the AudioContext.
+   */
+  unlock() {
+    try {
+      const ctx = Howler.ctx;
+      if (ctx && ctx.state === 'suspended') {
+        void ctx.resume();
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  /** @param {string} src */
+  warm(src) {
+    if (!src) return;
+    mediaCache.warm(src);
+    void this.getHowl(src);
+  }
+
+  /**
+   * @param {Howl} howl
+   * @param {number} soundId
+   * @param {number} startTime
+   * @param {number} engineTime
+   * @param {number} offsetSeconds
+   */
+  seekForEngineTime(howl, soundId, startTime, engineTime, offsetSeconds) {
+    const rawOffset = Number(offsetSeconds);
+    const offset = Number.isFinite(rawOffset) ? rawOffset : 0;
+    const duration = howl.duration();
+    if (!Number.isFinite(duration) || duration <= 0) {
+      howl.seek(Math.max(0, engineTime - startTime + offset), soundId);
+      return;
+    }
+    const raw = (engineTime - startTime + offset) % duration;
+    const position = raw < 0 ? raw + duration : raw;
+    howl.seek(position, soundId);
+  }
+
+  /**
+   * @param {{
+   *   actionId: string,
+   *   engine: import('@xzdarcy/react-timeline-editor').TimelineEngine,
+   *   src: string,
+   *   startTime: number,
+   *   time: number,
+   *   offset: (number|undefined),
+   * }} data
+   */
+  start(data) {
+    const { actionId, src, startTime, time, engine } = data;
+    const requestedOffset = Number(data.offset ?? 0);
+    const offsetSeconds = Number.isFinite(requestedOffset) ? requestedOffset : 0;
+
+    const existing = this.activeByActionId[actionId];
+    if (existing) {
+      const howl = this.getHowl(existing.src);
+      howl.rate(engine.getPlayRate(), existing.soundId);
+
+      try {
+        if (!howl.playing(existing.soundId)) {
+          howl.play(existing.soundId);
+        }
+      } catch {
+        // ignore
+      }
+
+      if (!engine.isPlaying) {
+        this.seekForEngineTime(howl, existing.soundId, existing.startTime, time, existing.offset);
+      }
+      return;
+    }
+
+    const howl = this.getHowl(src);
+    const soundId = howl.play();
+    howl.rate(engine.getPlayRate(), soundId);
+    this.seekForEngineTime(howl, soundId, startTime, time, offsetSeconds);
+
+    let lastResyncAtMs = performance.now();
+
+    const timeListener = ({ time }) => {
+      if (!engine.isPlaying) {
+        this.seekForEngineTime(howl, soundId, startTime, time, offsetSeconds);
+        return;
+      }
+
+      const now = performance.now();
+      if (now - lastResyncAtMs < 500) return;
+      lastResyncAtMs = now;
+
+      try {
+        const expected = Math.max(0, time - startTime + offsetSeconds);
+        const currentPos = Number(howl.seek(soundId));
+        if (Number.isFinite(currentPos) && Math.abs(currentPos - expected) > 0.25) {
+          this.seekForEngineTime(howl, soundId, startTime, time, offsetSeconds);
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    const rateListener = ({ rate }) => {
+      howl.rate(rate, soundId);
+    };
+
+    engine.on('afterSetTime', timeListener);
+    engine.on('afterSetPlayRate', rateListener);
+
+    this.activeByActionId[actionId] = {
+      src,
+      startTime,
+      offset: offsetSeconds,
+      soundId,
+      engine,
+      lastResyncAtMs,
+      time: timeListener,
+      rate: rateListener,
+    };
+  }
+
+  /** @param {{ actionId: string }} data */
+  stop(data) {
+    const { actionId } = data;
+    const active = this.activeByActionId[actionId];
+    if (!active) return;
+
+    const howl = this.getHowl(active.src);
+    try {
+      howl.stop(active.soundId);
+    } catch {
+      // ignore
+    }
+
+    active.time && active.engine.off('afterSetTime', active.time);
+    active.rate && active.engine.off('afterSetPlayRate', active.rate);
+    delete this.activeByActionId[actionId];
+  }
+}
+
+export default new AudioControl();
+```
+
+---
+
+## File: `components/movie/timeline/effects.js`
+
+```js
+/** @typedef {import('@xzdarcy/react-timeline-editor').TimelineEffect} TimelineEffect */
+import audioControl from './audioControl';
+import videoControl from './videoControl';
+
+/** @type {Record<string, TimelineEffect>} */
+export const effects = {
+  effect0: {
+    id: 'effect0',
+    name: 'Play audio',
+    source: {
+      start: ({ action, engine, isPlaying, time }) => {
+        if (isPlaying) {
+          const { src, offset } = action?.data ?? {};
+          if (!src) return;
+          audioControl.warm(src);
+          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time, offset });
+        }
+      },
+      enter: ({ action, engine, isPlaying, time }) => {
+        if (isPlaying) {
+          const { src, offset } = action?.data ?? {};
+          if (!src) return;
+          audioControl.warm(src);
+          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time, offset });
+        }
+      },
+      leave: ({ action }) => {
+        audioControl.stop({ actionId: action.id });
+      },
+      stop: ({ action }) => {
+        audioControl.stop({ actionId: action.id });
+      },
+    },
+  },
+
+  effect2: {
+    id: 'effect2',
+    name: 'Play video audio',
+    source: {
+      start: ({ action, engine, isPlaying, time }) => {
+        if (isPlaying) {
+          const { src, offset } = action?.data ?? {};
+          if (!src) return;
+          audioControl.warm(src);
+          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time, offset });
+        }
+      },
+      enter: ({ action, engine, isPlaying, time }) => {
+        if (isPlaying) {
+          const { src, offset } = action?.data ?? {};
+          if (!src) return;
+          audioControl.warm(src);
+          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time, offset });
+        }
+      },
+      leave: ({ action }) => {
+        audioControl.stop({ actionId: action.id });
+      },
+      stop: ({ action }) => {
+        audioControl.stop({ actionId: action.id });
+      },
+    },
+  },
+
+  effect1: {
+    id: 'effect1',
+    name: 'Play video',
+    source: {
+      start: ({ action, engine, isPlaying, time }) => {
+        const { src, previewSrc, offset } = action?.data ?? {};
+        const chosen = previewSrc || src;
+        if (chosen) {
+          videoControl.warm(chosen);
+          videoControl.setSource(chosen);
+        }
+        videoControl.setActive(true);
+        videoControl.setRate(engine.getPlayRate());
+        const inPoint = Number(offset ?? 0);
+        videoControl.seek(Math.max(0, time - action.start + (Number.isFinite(inPoint) ? inPoint : 0)), { force: true });
+        if (isPlaying) {
+          videoControl.play();
+        }
+      },
+      enter: ({ action, engine, isPlaying, time }) => {
+        const { src, previewSrc, offset } = action?.data ?? {};
+        const chosen = previewSrc || src;
+        if (chosen) {
+          videoControl.warm(chosen);
+          videoControl.setSource(chosen);
+        }
+        videoControl.setActive(true);
+        videoControl.setRate(engine.getPlayRate());
+        const inPoint = Number(offset ?? 0);
+        videoControl.seek(Math.max(0, time - action.start + (Number.isFinite(inPoint) ? inPoint : 0)), { force: true });
+        if (isPlaying) {
+          videoControl.play();
+        }
+      },
+      update: ({ action, engine, time, isPlaying }) => {
+        const { src, previewSrc, offset } = action?.data ?? {};
+        const chosen = previewSrc || src;
+        if (chosen) videoControl.setSource(chosen);
+        videoControl.setActive(true);
+        videoControl.setRate(engine.getPlayRate());
+
+        // Smooth preview: NEVER seek while playing.
+        if (!isPlaying) {
+          const inPoint = Number(offset ?? 0);
+          videoControl.seek(Math.max(0, time - action.start + (Number.isFinite(inPoint) ? inPoint : 0)), { force: true });
+        }
+      },
+      leave: () => {
+        videoControl.pause();
+        videoControl.unbindEngine();
+        videoControl.setActive(false);
+      },
+      stop: () => {
+        videoControl.pause();
+        videoControl.unbindEngine();
+        videoControl.setActive(false);
+      },
+    },
+  },
+};
+```
+
+---
+
+## File: `components/movie/timeline/customRenders.jsx`
+
+```jsx
+export const CustomRender0 = ({ action, row }) => {
+  return (
+    <div className={'effect0'} data-action-id={action.id} data-row-id={row.id}>
+      <div className={`effect0-text`}>{`Audio: ${action.data.name}`}</div>
+    </div>
+  );
+};
+
+export const CustomRender1 = ({ action, row }) => {
+  return (
+    <div className={'effect1'} data-action-id={action.id} data-row-id={row.id}>
+      <div className={`effect1-text`}>{`Video: ${action.data.name}`}</div>
+    </div>
+  );
+};
+
+export const CustomRender2 = ({ action, row }) => {
+  return (
+    <div className={'effect2'} data-action-id={action.id} data-row-id={row.id}>
+      <div className={`effect2-text`}>{`Video audio: ${action.data.name}`}</div>
+    </div>
+  );
+};
+```
+
+---
+
+## File: `components/movie/timeline/TimelineEditor.jsx`
+
+```jsx
+import { Timeline } from '@xzdarcy/react-timeline-editor';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  TouchSensor,
+  rectIntersection,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+
+import { effects } from './effects';
+import mediaCache from './mediaCache';
+import { useCoarsePointer } from './useCoarsePointer';
+import videoControl from './videoControl';
+import TimelinePlayer from './TimelinePlayer';
+import { CustomRender0, CustomRender1, CustomRender2 } from './customRenders';
+import {
+  AUDIO_ROW_INDEXES,
+  LANE_LABELS,
+  MAX_HISTORY,
+  VIDEO_ROW_INDEXES,
+  scale,
+  scaleWidth,
+  startLeft,
+} from './timelineConstants';
+import { createEmptyEditorData } from './types';
+
+import 'antd/dist/antd.css';
+import './timelineEditor.css';
+
+const FootageCard = ({ item, hint, isDragging }) => {
+  return (
+    <div className={`footage-card${isDragging ? ' is-dragging' : ''}`}>
+      <div className="footage-name">{item.name}</div>
+      {item.kind === 'video' ? (
+        <video
+          className="footage-preview"
+          src={item.previewSrc || item.src}
+          muted
+          preload="metadata"
+          draggable={false}
+          onDragStart={(e) => e.preventDefault()}
+          playsInline
+        />
+      ) : (
+        <audio
+          className="footage-audio"
+          src={item.src}
+          controls
+          preload="metadata"
+          draggable={false}
+          onDragStart={(e) => e.preventDefault()}
+        />
+      )}
+      <div className="footage-kind">{hint}</div>
+    </div>
+  );
+};
+
+const DraggableFootageCard = ({ item, hint }) => {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: `footage-${item.id}`,
+    data: { item },
+  });
+
+  const style = transform
+    ? {
+        transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
+      }
+    : undefined;
+
+  return (
+    <div ref={setNodeRef} style={style} {...listeners} {...attributes}>
+      <FootageCard item={item} hint={hint} isDragging={isDragging} />
+    </div>
+  );
+};
+
+export default function TimelineEditor({ footageItems, initialEditorData, onEditorDataChange }) {
+  const [data, setData] = useState(() => {
+    const base = initialEditorData?.length ? structuredClone(initialEditorData) : createEmptyEditorData();
+    // Ensure 4 lanes.
+    while (base.length < 4) base.push({ id: `${base.length}`, actions: [] });
+    return base;
+  });
+  const [selectedActionId, setSelectedActionId] = useState(null);
+  const [past, setPast] = useState([]);
+  const [future, setFuture] = useState([]);
+  const dataRef = useRef(data);
+  const isMobile = useCoarsePointer();
+  const timelineState = useRef(null);
+  const timelineWrapRef = useRef(null);
+  const autoScrollWhenPlay = useRef(true);
+
+  const [activeFootage, setActiveFootage] = useState(null);
+  const [activeFootageSize, setActiveFootageSize] = useState(null);
+  const [hoveredDropRowIndex, setHoveredDropRowIndex] = useState(null);
+  const [laneScrollTop, setLaneScrollTop] = useState(0);
+  const [laneScrollLeft, setLaneScrollLeft] = useState(0);
+  const [editAreaOffsetTop, setEditAreaOffsetTop] = useState(0);
+  const [editAreaOffsetLeft, setEditAreaOffsetLeft] = useState(0);
+  const [isDragOverTimeline, setIsDragOverTimeline] = useState(false);
+  const [dragClient, setDragClient] = useState(null);
+  const lastDragClientRef = useRef(null);
+  const dragStartClientRef = useRef(null);
+  const timelinePointerDownRef = useRef(null);
+  const cursorDraggingRef = useRef(null);
+
+  const ROW_HEIGHT_PX = isMobile ? 48 : 32;
+
+  const pickNearestRowIndex = (rawRowIndex, candidateIndexes) => {
+    if (candidateIndexes.length === 0) return null;
+    if (rawRowIndex == null) return candidateIndexes[0];
+    let best = candidateIndexes[0];
+    let bestDist = Math.abs(rawRowIndex - best);
+    for (const idx of candidateIndexes) {
+      const dist = Math.abs(rawRowIndex - idx);
+      if (dist < bestDist) {
+        best = idx;
+        bestDist = dist;
+      }
+    }
+    return best;
+  };
+
+  const pickLaneForItem = (item, rawRowIndex) => {
+    if (!item) return null;
+    if (item.kind === 'video') return pickNearestRowIndex(rawRowIndex, VIDEO_ROW_INDEXES);
+    return pickNearestRowIndex(rawRowIndex, AUDIO_ROW_INDEXES);
+  };
+
+  const pairedAudioRowForVideoRow = (videoRowIndex) => {
+    return videoRowIndex === VIDEO_ROW_INDEXES[1] ? AUDIO_ROW_INDEXES[1] : AUDIO_ROW_INDEXES[0];
+  };
+
+  useEffect(() => {
+    mediaCache.warmFromEditorData(data);
+    onEditorDataChange?.(data);
+  }, [data, onEditorDataChange]);
+
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
+  useLayoutEffect(() => {
+    const root = timelineWrapRef.current;
+    if (!root) return;
+
+    const measure = () => {
+      const wrapRect = root.getBoundingClientRect();
+      const editArea = root.querySelector('.timeline-editor-edit-area');
+      if (!(editArea instanceof HTMLElement)) return;
+      const editRect = editArea.getBoundingClientRect();
+      setEditAreaOffsetTop(editRect.top - wrapRect.top);
+      setEditAreaOffsetLeft(editRect.left - wrapRect.left);
+    };
+
+    const raf = requestAnimationFrame(measure);
+    window.addEventListener('resize', measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', measure);
+    };
+  }, [isMobile, data.length]);
+
+  const isPointOverTimeline = (pt) => {
+    const root = timelineWrapRef.current;
+    if (!root || !pt) return false;
+    const rect = root.getBoundingClientRect();
+    return pt.x >= rect.left && pt.x <= rect.right && pt.y >= rect.top && pt.y <= rect.bottom;
+  };
+
+  const uidCounterRef = useRef(0);
+  const uid = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `uid-${++uidCounterRef.current}`);
+
+  const pendingHistoryBeforeRef = useRef(null);
+  const pendingHistorySignatureRef = useRef(null);
+  const pendingGestureActionIdRef = useRef(null);
+
+  const CURSOR_SNAP_THRESHOLD_SEC = 0.9;
+  const CURSOR_SNAP_RELEASE_SEC = 1.05;
+  const snapStateRef = useRef({ actionId: null, edge: null });
+
+  const gestureRef = useRef({
+    actionId: null,
+    mode: null,
+    dir: null,
+    basePointerTime: null,
+    lastPointerTime: null,
+    initialStart: 0,
+    initialEnd: 0,
+    takeover: false,
+  });
+
+  const pointerListenersAttachedRef = useRef(false);
+
+  const getTimelineSignature = (rows) => {
+    return rows
+      .map((row) => {
+        const actionsSig = (row.actions ?? [])
+          .map((action) => `${String(action.id)}@${Number(action.start)}-${Number(action.end)}`)
+          .join('|');
+        return `${String(row.id)}:${actionsSig}`;
+      })
+      .join('||');
+  };
+
+  const pushHistory = (before) => {
+    const snapshot = structuredClone(before);
+    setPast((prev) => {
+      const next = [...prev, snapshot];
+      if (next.length > MAX_HISTORY) next.splice(0, next.length - MAX_HISTORY);
+      return next;
+    });
+    setFuture([]);
+  };
+
+  const rangesOverlap = (aStart, aEnd, bStart, bEnd) => aStart < bEnd && aEnd > bStart;
+
+  const wouldOverlapInRow = (row, movingActionId, nextStart, nextEnd) => {
+    const actions = Array.isArray(row?.actions) ? row.actions : [];
+    for (const other of actions) {
+      if (!other || other.id === movingActionId) continue;
+      if (rangesOverlap(nextStart, nextEnd, Number(other.start), Number(other.end))) return true;
+    }
+    return false;
+  };
+
+  const findActionById = (rows, actionId) => {
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+      const row = rows[rowIndex];
+      const actions = Array.isArray(row?.actions) ? row.actions : [];
+      for (let actionIndex = 0; actionIndex < actions.length; actionIndex++) {
+        const action = actions[actionIndex];
+        if (String(action?.id) !== actionId) continue;
+        return { rowIndex, actionIndex, action };
+      }
+    }
+    return null;
+  };
+
+  const findLinkedPartner = (rows, actionId) => {
+    const found = findActionById(rows, actionId);
+    const linkId = found?.action?.data?.linkId;
+    if (!found || !linkId) return null;
+
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+      const row = rows[rowIndex];
+      const actions = Array.isArray(row?.actions) ? row.actions : [];
+      for (let actionIndex = 0; actionIndex < actions.length; actionIndex++) {
+        const action = actions[actionIndex];
+        if (!action?.data?.linkId) continue;
+        if (String(action.data.linkId) !== String(linkId)) continue;
+        if (String(action.id) === String(actionId)) continue;
+        return { rowIndex, actionIndex, action };
+      }
+    }
+    return null;
+  };
+
+  const applyLinkedStartEnd = (rows, sourceActionId) => {
+    const source = findActionById(rows, sourceActionId);
+    if (!source) return rows;
+    const partner = findLinkedPartner(rows, sourceActionId);
+    if (!partner) return rows;
+
+    const nextStart = Number(source.action.start);
+    const nextEnd = Number(source.action.end);
+    if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd) || nextEnd <= nextStart) return rows;
+    if (Number(partner.action.start) === nextStart && Number(partner.action.end) === nextEnd) return rows;
+
+    const next = structuredClone(rows);
+    const partnerRow = next[partner.rowIndex];
+    const actions = Array.isArray(partnerRow.actions) ? [...partnerRow.actions] : [];
+    const updated = { ...(actions[partner.actionIndex] ?? {}), start: nextStart, end: nextEnd };
+    actions.splice(partner.actionIndex, 1, updated);
+    partnerRow.actions = actions;
+    return next;
+  };
+
+  const setStartEndForActionAndLinked = (rows, sourceActionId, nextStart, nextEnd) => {
+    if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd) || nextEnd <= nextStart) return rows;
+
+    const source = findActionById(rows, sourceActionId);
+    if (!source) return rows;
+    const partner = findLinkedPartner(rows, sourceActionId);
+
+    if (!partner) return rows;
+
+    const next = structuredClone(rows);
+
+    const sourceRow = next[source.rowIndex];
+    const sourceActions = Array.isArray(sourceRow.actions) ? [...sourceRow.actions] : [];
+    const updatedSource = { ...(sourceActions[source.actionIndex] ?? {}), start: nextStart, end: nextEnd };
+    sourceActions.splice(source.actionIndex, 1, updatedSource);
+    sourceRow.actions = sourceActions;
+
+    const partnerRow = next[partner.rowIndex];
+    const partnerActions = Array.isArray(partnerRow.actions) ? [...partnerRow.actions] : [];
+    const updatedPartner = { ...(partnerActions[partner.actionIndex] ?? {}), start: nextStart, end: nextEnd };
+    partnerActions.splice(partner.actionIndex, 1, updatedPartner);
+    partnerRow.actions = partnerActions;
+
+    return next;
+  };
+
+  const setStartEndForActionOnly = (rows, sourceActionId, nextStart, nextEnd) => {
+    if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd) || nextEnd <= nextStart) return rows;
+    const source = findActionById(rows, sourceActionId);
+    if (!source) return rows;
+    const existingStart = Number(source.action.start);
+    const existingEnd = Number(source.action.end);
+    if (existingStart === nextStart && existingEnd === nextEnd) return rows;
+
+    const next = structuredClone(rows);
+    const sourceRow = next[source.rowIndex];
+    const sourceActions = Array.isArray(sourceRow.actions) ? [...sourceRow.actions] : [];
+    const updatedSource = { ...(sourceActions[source.actionIndex] ?? {}), start: nextStart, end: nextEnd };
+    sourceActions.splice(source.actionIndex, 1, updatedSource);
+    sourceRow.actions = sourceActions;
+    return next;
+  };
+
+  const getCursorTime = () => {
+    const t = timelineState.current?.getTime ? Number(timelineState.current.getTime()) : 0;
+    return Number.isFinite(t) ? Math.max(0, t) : 0;
+  };
+
+  const maybeSnapToCursorForMove = (actionId, nextStart, nextEnd) => {
+    const cursorTime = getCursorTime();
+    const duration = nextEnd - nextStart;
+    if (!Number.isFinite(duration) || duration <= 0) {
+      return { start: nextStart, end: nextEnd, snapped: false, edge: null };
+    }
+
+    const distStart = Math.abs(nextStart - cursorTime);
+    const distEnd = Math.abs(nextEnd - cursorTime);
+    const closerEdge = distStart <= distEnd ? 'start' : 'end';
+    const minDist = Math.min(distStart, distEnd);
+
+    const snapState = snapStateRef.current;
+    const isSameAction = snapState.actionId === actionId;
+    const isSnapped = isSameAction && snapState.edge != null;
+
+    if (!isSnapped) {
+      if (minDist > CURSOR_SNAP_THRESHOLD_SEC) {
+        return { start: nextStart, end: nextEnd, snapped: false, edge: null };
+      }
+      snapStateRef.current = { actionId, edge: closerEdge };
+    } else {
+      const edge = snapState.edge;
+      const dist = edge === 'start' ? distStart : distEnd;
+      if (dist > CURSOR_SNAP_RELEASE_SEC) {
+        snapStateRef.current = { actionId, edge: null };
+        return { start: nextStart, end: nextEnd, snapped: false, edge: null };
+      }
+    }
+
+    const edge = snapStateRef.current.edge;
+    if (edge === 'start') {
+      const start = cursorTime;
+      const end = start + duration;
+      return { start: Math.max(0, start), end: Math.max(Math.max(0, start), end), snapped: true, edge };
+    }
+
+    const end = cursorTime;
+    const start = end - duration;
+    return { start: Math.max(0, start), end: Math.max(0, end), snapped: true, edge };
+  };
+
+  const maybeSnapToCursorForResize = (actionId, nextStart, nextEnd, dir) => {
+    const cursorTime = getCursorTime();
+    const snapEdge = dir === 'left' ? 'start' : 'end';
+    const dist = snapEdge === 'start' ? Math.abs(nextStart - cursorTime) : Math.abs(nextEnd - cursorTime);
+
+    const snapState = snapStateRef.current;
+    const isSameAction = snapState.actionId === actionId;
+    const isSnapped = isSameAction && snapState.edge === snapEdge;
+
+    if (!isSnapped) {
+      if (dist > CURSOR_SNAP_THRESHOLD_SEC) {
+        return { start: nextStart, end: nextEnd, snapped: false };
+      }
+      snapStateRef.current = { actionId, edge: snapEdge };
+    } else {
+      if (dist > CURSOR_SNAP_RELEASE_SEC) {
+        snapStateRef.current = { actionId, edge: null };
+        return { start: nextStart, end: nextEnd, snapped: false };
+      }
+    }
+
+    if (snapEdge === 'start') {
+      const start = Math.max(0, cursorTime);
+      const end = Math.max(start + 0.01, nextEnd);
+      return { start, end, snapped: true };
+    }
+
+    const end = Math.max(0, cursorTime);
+    const start = Math.min(nextStart, end - 0.01);
+    return { start: Math.max(0, start), end, snapped: true };
+  };
+
+  const insertActionAtTime = (item, at, targetRowIndex) => {
+    const duration = item.defaultDuration ?? 10;
+    let start = Math.max(0, at);
+    let end = start + duration;
+
+    const state = timelineState.current;
+    if (state?.isPlaying) state.pause();
+
+    setData((prev) => {
+      pushHistory(prev);
+      const next = structuredClone(prev);
+      while (next.length < 4) next.push({ id: `${next.length}`, actions: [] });
+
+      const raw = Number.isFinite(Number(targetRowIndex)) ? Number(targetRowIndex) : null;
+      const chosenVideoRowIndex = pickNearestRowIndex(raw, VIDEO_ROW_INDEXES) ?? VIDEO_ROW_INDEXES[0];
+      const chosenAudioRowIndex = pickNearestRowIndex(raw, AUDIO_ROW_INDEXES) ?? AUDIO_ROW_INDEXES[0];
+
+      const bumpStartToAvoidOverlaps = (rowIndexes) => {
+        const intervals = [];
+        for (const idx of rowIndexes) {
+          const actions = Array.isArray(next[idx]?.actions) ? next[idx].actions : [];
+          for (const a of actions) {
+            const s = Number(a?.start);
+            const e = Number(a?.end);
+            if (!Number.isFinite(s) || !Number.isFinite(e)) continue;
+            intervals.push({ start: s, end: e });
+          }
+        }
+        intervals.sort((a, b) => a.start - b.start);
+        for (const other of intervals) {
+          if (!rangesOverlap(start, end, other.start, other.end)) continue;
+          start = other.end;
+          end = start + duration;
+        }
+      };
+
+      if (item.kind === 'video') {
+        const vRow = chosenVideoRowIndex;
+        const aRow = pairedAudioRowForVideoRow(vRow);
+        bumpStartToAvoidOverlaps([vRow, aRow]);
+
+        const linkId = `link-${uid()}`;
+        const clipId = `video-${uid()}`;
+        const audioId = `video-audio-${uid()}`;
+
+        next[vRow].actions = [
+          ...(next[vRow].actions ?? []),
+          {
+            id: clipId,
+            start,
+            end,
+            effectId: 'effect1',
+            data: {
+              src: item.src,
+              previewSrc: item.previewSrc,
+              name: item.name,
+              linkId,
+              assetKey: item.assetKey,
+            },
+          },
+        ];
+
+        next[aRow].actions = [
+          ...(next[aRow].actions ?? []),
+          {
+            id: audioId,
+            start,
+            end,
+            effectId: 'effect2',
+            data: { src: item.src, name: item.name, linkId, assetKey: item.assetKey },
+          },
+        ];
+      } else {
+        const aRow = chosenAudioRowIndex;
+        bumpStartToAvoidOverlaps([aRow]);
+        next[aRow].actions = [
+          ...(next[aRow].actions ?? []),
+          {
+            id: `audio-${uid()}`,
+            start,
+            end,
+            effectId: 'effect0',
+            data: { src: item.src, name: item.name, assetKey: item.assetKey },
+          },
+        ];
+      }
+
+      return next;
+    });
+  };
+
+  const getTimelineScrollLeft = () => {
+    const root = timelineWrapRef.current;
+    if (!root) return 0;
+    const grid = root.querySelector('.timeline-editor-edit-area .ReactVirtualized__Grid');
+    return grid?.scrollLeft ?? 0;
+  };
+
+  const timeFromClientX = (clientX) => {
+    const root = timelineWrapRef.current;
+    if (!root) return 0;
+    const editArea = root.querySelector('.timeline-editor-edit-area');
+    const rect = (editArea ?? root).getBoundingClientRect();
+    const position = clientX - rect.x;
+    const left = position + getTimelineScrollLeft();
+    const time = ((left - startLeft) * scale) / scaleWidth;
+    return Math.max(0, time);
+  };
+
+  const timeToPixel = (t) => {
+    const time = Number(t);
+    if (!Number.isFinite(time)) return 0;
+    return startLeft + (time * scaleWidth) / scale;
+  };
+
+  const computeBumpedStart = (item, desiredStart, laneRowIndex, rows) => {
+    const duration = item.defaultDuration ?? 10;
+    let start = Math.max(0, desiredStart);
+    let end = start + duration;
+
+    const rowIndexes = [];
+    if (item.kind === 'video') {
+      const vRow = laneRowIndex;
+      const aRow = pairedAudioRowForVideoRow(vRow);
+      rowIndexes.push(vRow, aRow);
+    } else {
+      rowIndexes.push(laneRowIndex);
+    }
+
+    const intervals = [];
+    for (const idx of rowIndexes) {
+      const actions = Array.isArray(rows[idx]?.actions) ? rows[idx].actions : [];
+      for (const a of actions) {
+        const s = Number(a?.start);
+        const e = Number(a?.end);
+        if (!Number.isFinite(s) || !Number.isFinite(e)) continue;
+        intervals.push({ start: s, end: e });
+      }
+    }
+    intervals.sort((a, b) => a.start - b.start);
+
+    for (const other of intervals) {
+      if (!rangesOverlap(start, end, other.start, other.end)) continue;
+      start = other.end;
+      end = start + duration;
+    }
+
+    return Math.max(0, start);
+  };
+
+  const rowIndexFromClientY = (clientY) => {
+    const root = timelineWrapRef.current;
+    if (!root) return null;
+    const editArea = root.querySelector('.timeline-editor-edit-area');
+    if (!(editArea instanceof HTMLElement)) return null;
+    const rect = editArea.getBoundingClientRect();
+    const position = clientY - rect.y;
+    if (position < 0 || position > rect.height) return null;
+    const y = position + laneScrollTop;
+    const idx = Math.floor(y / ROW_HEIGHT_PX);
+    if (!Number.isFinite(idx)) return null;
+    const max = Math.max(0, dataRef.current.length - 1);
+    return Math.min(Math.max(0, idx), max);
+  };
+
+  const getClientXYFromEvent = (ev) => {
+    if (!ev) return null;
+    if ('clientX' in ev && 'clientY' in ev) {
+      const x = Number(ev.clientX);
+      const y = Number(ev.clientY);
+      if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+    }
+
+    const touches = ev.touches;
+    const changedTouches = ev.changedTouches;
+    const t = (touches && touches.length ? touches[0] : null) || (changedTouches && changedTouches.length ? changedTouches[0] : null);
+    if (t) {
+      const x = Number(t.clientX);
+      const y = Number(t.clientY);
+      if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+    }
+    return null;
+  };
+
+  const attachGesturePointerTracking = () => {
+    if (pointerListenersAttachedRef.current) return;
+    pointerListenersAttachedRef.current = true;
+
+    const onPointerMove = (e) => {
+      const g = gestureRef.current;
+      if (!g.actionId || !g.mode) return;
+      if (e.isPrimary === false) return;
+
+      const t = timeFromClientX(e.clientX);
+      if (g.basePointerTime == null) {
+        g.basePointerTime = t;
+      }
+      g.lastPointerTime = t;
+    };
+
+    const onPointerUpOrCancel = () => {
+      gestureRef.current = {
+        actionId: null,
+        mode: null,
+        dir: null,
+        basePointerTime: null,
+        lastPointerTime: null,
+        initialStart: 0,
+        initialEnd: 0,
+        takeover: false,
+      };
+      snapStateRef.current = { actionId: null, edge: null };
+    };
+
+    window.addEventListener('pointermove', onPointerMove, { capture: true });
+    window.addEventListener('pointerup', onPointerUpOrCancel, { capture: true });
+    window.addEventListener('pointercancel', onPointerUpOrCancel, { capture: true });
+
+    gestureRef.current._removePointerListeners = () => {
+      window.removeEventListener('pointermove', onPointerMove, { capture: true });
+      window.removeEventListener('pointerup', onPointerUpOrCancel, { capture: true });
+      window.removeEventListener('pointercancel', onPointerUpOrCancel, { capture: true });
+      pointerListenersAttachedRef.current = false;
+    };
+  };
+
+  const detachGesturePointerTracking = () => {
+    const remove = gestureRef.current?._removePointerListeners;
+    remove?.();
+    delete gestureRef.current._removePointerListeners;
+  };
+
+  const cleanEditorData = (rows) =>
+    rows.map((row) => ({
+      ...row,
+      selected: undefined,
+      actions: (row.actions ?? []).map((action) => ({ ...action, selected: undefined })),
+    }));
+
+  const editorDataForRender = useMemo(() => {
+    return data.map((row, rowIndex) => {
+      const hasSelected = selectedActionId ? (row.actions ?? []).some((action) => String(action.id) === selectedActionId) : false;
+      const isDropHover = activeFootage != null && hoveredDropRowIndex != null && rowIndex === hoveredDropRowIndex;
+      const baseClassNames = Array.isArray(row?.classNames) ? row.classNames : [];
+      const classNames = isDropHover ? [...baseClassNames, 'dnd-drop-hover'] : baseClassNames;
+
+      return {
+        ...row,
+        classNames,
+        selected: hasSelected,
+        actions: (row.actions ?? []).map((action) => ({
+          ...action,
+          selected: selectedActionId ? String(action.id) === selectedActionId : false,
+        })),
+      };
+    });
+  }, [data, selectedActionId, activeFootage, hoveredDropRowIndex]);
+
+  const deleteSelectedClip = () => {
+    if (!selectedActionId) return;
+
+    const state = timelineState.current;
+    if (state?.isPlaying) state.pause();
+
+    setData((prev) => {
+      pushHistory(prev);
+
+      let linkId = null;
+      for (const row of prev) {
+        const actions = Array.isArray(row?.actions) ? row.actions : [];
+        for (const action of actions) {
+          if (String(action?.id) !== selectedActionId) continue;
+          const candidate = action?.data?.linkId;
+          if (candidate != null) linkId = String(candidate);
+          break;
+        }
+        if (linkId != null) break;
+      }
+
+      return prev.map((row) => ({
+        ...row,
+        actions: (row.actions ?? []).filter((action) => {
+          if (String(action?.id) === selectedActionId) return false;
+          if (linkId && String(action?.data?.linkId ?? '') === linkId) return false;
+          return true;
+        }),
+      }));
+    });
+
+    setSelectedActionId(null);
+  };
+
+  const splitSelectedClipAtCursor = () => {
+    if (!selectedActionId) return;
+
+    const state = timelineState.current;
+    const cursorTimeRaw = state?.getTime ? state.getTime() : null;
+    if (cursorTimeRaw == null) return;
+
+    const cursorTime = Number(cursorTimeRaw);
+    if (!Number.isFinite(cursorTime)) return;
+    if (state?.isPlaying) state.pause();
+
+    pendingHistoryBeforeRef.current = null;
+    pendingHistorySignatureRef.current = null;
+
+    setData((prev) => {
+      let foundRowIndex = -1;
+      let foundActionIndex = -1;
+      let foundAction = null;
+
+      for (let rowIndex = 0; rowIndex < prev.length; rowIndex++) {
+        const row = prev[rowIndex];
+        const actions = Array.isArray(row?.actions) ? row.actions : [];
+        for (let actionIndex = 0; actionIndex < actions.length; actionIndex++) {
+          const action = actions[actionIndex];
+          if (String(action?.id) !== selectedActionId) continue;
+          foundRowIndex = rowIndex;
+          foundActionIndex = actionIndex;
+          foundAction = action;
+          break;
+        }
+        if (foundAction) break;
+      }
+
+      if (!foundAction) return prev;
+
+      const foundLinkId = foundAction?.data?.linkId ? String(foundAction.data.linkId) : null;
+      let partnerRowIndex = -1;
+      let partnerActionIndex = -1;
+      let partnerAction = null;
+
+      if (foundLinkId) {
+        for (let rowIndex = 0; rowIndex < prev.length; rowIndex++) {
+          const row = prev[rowIndex];
+          const actions = Array.isArray(row?.actions) ? row.actions : [];
+          for (let actionIndex = 0; actionIndex < actions.length; actionIndex++) {
+            const action = actions[actionIndex];
+            if (String(action?.id) === selectedActionId) continue;
+            if (String(action?.data?.linkId ?? '') !== foundLinkId) continue;
+            partnerRowIndex = rowIndex;
+            partnerActionIndex = actionIndex;
+            partnerAction = action;
+            break;
+          }
+          if (partnerAction) break;
+        }
+      }
+
+      const start = Number(foundAction.start);
+      const end = Number(foundAction.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return prev;
+      if (!(start < cursorTime && cursorTime < end)) return prev;
+
+      pushHistory(prev);
+
+      const leftLinkId = foundLinkId && partnerAction ? `link-${uid()}` : foundLinkId;
+      const rightLinkId = foundLinkId && partnerAction ? `link-${uid()}` : foundLinkId;
+
+      const rightActionId = `${String(foundAction.id)}-r-${uid()}`;
+      const currentOffsetRaw = Number(foundAction?.data?.offset ?? 0);
+      const currentOffset = Number.isFinite(currentOffsetRaw) ? currentOffsetRaw : 0;
+      const splitDelta = cursorTime - start;
+      const rightOffset = currentOffset + (Number.isFinite(splitDelta) ? splitDelta : 0);
+
+      const left = {
+        ...foundAction,
+        start,
+        end: cursorTime,
+        id: foundAction.id,
+        data: { ...(foundAction?.data ?? {}), offset: currentOffset, linkId: leftLinkId ?? undefined },
+      };
+      const right = {
+        ...foundAction,
+        start: cursorTime,
+        end,
+        id: rightActionId,
+        data: { ...(foundAction?.data ?? {}), offset: rightOffset, linkId: rightLinkId ?? undefined },
+      };
+
+      const next = structuredClone(prev);
+      const nextRow = next[foundRowIndex];
+      const nextActions = Array.isArray(nextRow.actions) ? [...nextRow.actions] : [];
+      nextActions.splice(foundActionIndex, 1, left, right);
+      nextActions.sort((a, b) => Number(a?.start) - Number(b?.start));
+      nextRow.actions = nextActions;
+
+      if (partnerAction && partnerRowIndex >= 0 && partnerActionIndex >= 0) {
+        const pStart = Number(partnerAction?.start);
+        const pEnd = Number(partnerAction?.end);
+        if (Number.isFinite(pStart) && Number.isFinite(pEnd) && pStart === start && pEnd === end) {
+          const partnerRightId = `${String(partnerAction?.id)}-r-${uid()}`;
+          const partnerLeft = {
+            ...partnerAction,
+            start,
+            end: cursorTime,
+            id: partnerAction?.id,
+            data: { ...(partnerAction?.data ?? {}), linkId: leftLinkId ?? undefined },
+          };
+          const partnerRight = {
+            ...partnerAction,
+            start: cursorTime,
+            end,
+            id: partnerRightId,
+            data: { ...(partnerAction?.data ?? {}), linkId: rightLinkId ?? undefined },
+          };
+
+          const partnerRow = next[partnerRowIndex];
+          const partnerActions = Array.isArray(partnerRow.actions) ? [...partnerRow.actions] : [];
+          partnerActions.splice(partnerActionIndex, 1, partnerLeft, partnerRight);
+          partnerActions.sort((a, b) => Number(a?.start) - Number(b?.start));
+          partnerRow.actions = partnerActions;
+        }
+      }
+
+      return next;
+    });
+  };
+
+  const undo = () => {
+    const state = timelineState.current;
+    const currentTime = state?.getTime ? state.getTime() : null;
+    if (state?.isPlaying) state.pause();
+
+    pendingHistoryBeforeRef.current = null;
+    pendingHistorySignatureRef.current = null;
+    setSelectedActionId(null);
+
+    setPast((prevPast) => {
+      if (prevPast.length === 0) return prevPast;
+
+      const previous = prevPast[prevPast.length - 1];
+      const currentSnapshot = structuredClone(dataRef.current);
+      setFuture((prevFuture) => [...prevFuture, currentSnapshot]);
+      setData(structuredClone(previous));
+      return prevPast.slice(0, -1);
+    });
+
+    if (currentTime != null) {
+      requestAnimationFrame(() => {
+        const s = timelineState.current;
+        if (s?.setTime) s.setTime(currentTime);
+      });
+    }
+  };
+
+  const redo = () => {
+    const state = timelineState.current;
+    const currentTime = state?.getTime ? state.getTime() : null;
+    if (state?.isPlaying) state.pause();
+
+    pendingHistoryBeforeRef.current = null;
+    pendingHistorySignatureRef.current = null;
+    setSelectedActionId(null);
+
+    setFuture((prevFuture) => {
+      if (prevFuture.length === 0) return prevFuture;
+
+      const next = prevFuture[prevFuture.length - 1];
+      const currentSnapshot = structuredClone(dataRef.current);
+      setPast((prevPast) => {
+        const out = [...prevPast, currentSnapshot];
+        if (out.length > MAX_HISTORY) out.splice(0, out.length - MAX_HISTORY);
+        return out;
+      });
+      setData(structuredClone(next));
+      return prevFuture.slice(0, -1);
+    });
+
+    if (currentTime != null) {
+      requestAnimationFrame(() => {
+        const s = timelineState.current;
+        if (s?.setTime) s.setTime(currentTime);
+      });
+    }
+  };
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 6 } })
+  );
+
+  const { setNodeRef: setTimelineDropRef, isOver: isTimelineOver } = useDroppable({ id: 'timeline-drop' });
+
+  const handleDragStart = (event) => {
+    const item = event?.active?.data?.current?.item;
+    setActiveFootage(item ?? null);
+
+    const pt = getClientXYFromEvent(event.activatorEvent);
+    lastDragClientRef.current = pt;
+    dragStartClientRef.current = pt;
+    setDragClient(pt);
+    if (pt) {
+      const over = isPointOverTimeline(pt);
+      setIsDragOverTimeline(over);
+      const raw = rowIndexFromClientY(pt.y);
+      setHoveredDropRowIndex(over ? pickLaneForItem(item ?? null, raw) : null);
+    } else {
+      setHoveredDropRowIndex(null);
+      setIsDragOverTimeline(false);
+    }
+
+    const initial = event.active.rect.current.initial;
+    if (initial) {
+      setActiveFootageSize({ width: initial.width, height: initial.height });
+    } else {
+      setActiveFootageSize(null);
+    }
+  };
+
+  const handleDragMove = (event) => {
+    const initial = event.active.rect.current.initial;
+    if (!activeFootageSize && initial) {
+      setActiveFootageSize({ width: initial.width, height: initial.height });
+    }
+
+    const start = dragStartClientRef.current;
+    if (!start) {
+      setHoveredDropRowIndex(null);
+      return;
+    }
+
+    const dx = Number(event?.delta?.x ?? 0);
+    const dy = Number(event?.delta?.y ?? 0);
+    const pt = { x: start.x + (Number.isFinite(dx) ? dx : 0), y: start.y + (Number.isFinite(dy) ? dy : 0) };
+    lastDragClientRef.current = pt;
+    setDragClient(pt);
+
+    const over = isPointOverTimeline(pt);
+    setIsDragOverTimeline(over);
+    const raw = rowIndexFromClientY(pt.y);
+    setHoveredDropRowIndex(over ? pickLaneForItem(activeFootage, raw) : null);
+  };
+
+  const handleDragEnd = (event) => {
+    const item = event?.active?.data?.current?.item;
+    const start = dragStartClientRef.current;
+    const dx = Number(event?.delta?.x ?? 0);
+    const dy = Number(event?.delta?.y ?? 0);
+    const pt = start
+      ? { x: start.x + (Number.isFinite(dx) ? dx : 0), y: start.y + (Number.isFinite(dy) ? dy : 0) }
+      : lastDragClientRef.current;
+    lastDragClientRef.current = pt;
+
+    const overByCollision = String(event.over?.id ?? '') === 'timeline-drop';
+    const overTimeline = overByCollision || isPointOverTimeline(pt);
+    if (item && overTimeline && pt) {
+      const dropTime = timeFromClientX(pt.x);
+      const dropRowIndex = rowIndexFromClientY(pt.y);
+      const laneRowIndex = pickLaneForItem(item, dropRowIndex);
+      setHoveredDropRowIndex(laneRowIndex);
+      insertActionAtTime(item, Math.max(0, dropTime), laneRowIndex);
+    }
+
+    setActiveFootage(null);
+    setActiveFootageSize(null);
+    setHoveredDropRowIndex(null);
+    setIsDragOverTimeline(false);
+    setDragClient(null);
+    dragStartClientRef.current = null;
+  };
+
+  const handleDragCancel = () => {
+    setActiveFootage(null);
+    setActiveFootageSize(null);
+    setHoveredDropRowIndex(null);
+    setIsDragOverTimeline(false);
+    setDragClient(null);
+    dragStartClientRef.current = null;
+  };
+
+  const ghostPreview = useMemo(() => {
+    if (!activeFootage) return null;
+    if (!isDragOverTimeline) return null;
+    const pt = dragClient;
+    if (!pt) return null;
+    const rawRow = rowIndexFromClientY(pt.y);
+    const laneRow = pickLaneForItem(activeFootage, rawRow);
+    if (laneRow == null) return null;
+    const desiredStart = timeFromClientX(pt.x);
+    const bumpedStart = computeBumpedStart(activeFootage, desiredStart, laneRow, dataRef.current);
+    const duration = activeFootage.defaultDuration ?? 10;
+    return {
+      laneRow,
+      desiredStart,
+      start: bumpedStart,
+      end: bumpedStart + duration,
+      duration,
+      kind: activeFootage.kind,
+    };
+  }, [activeFootage, isDragOverTimeline, dragClient, laneScrollLeft, laneScrollTop, ROW_HEIGHT_PX]);
+
+  const handleTimelinePointerDown = (e) => {
+    if (!isMobile) return;
+    if (e.pointerType === 'mouse') return;
+    if (activeFootage) return;
+
+    const target = e.target instanceof HTMLElement ? e.target : null;
+    const isCursorHit = Boolean(target?.closest?.('.timeline-editor-cursor-area, .timeline-editor-cursor'));
+    if (isCursorHit) {
+      cursorDraggingRef.current = { pointerId: e.pointerId };
+      timelinePointerDownRef.current = null;
+      try {
+        e.currentTarget?.setPointerCapture?.(e.pointerId);
+      } catch {
+        // ignore
+      }
+      e.preventDefault();
+      return;
+    }
+
+    timelinePointerDownRef.current = { x: e.clientX, y: e.clientY };
+  };
+
+  const handleTimelinePointerMove = (e) => {
+    if (!isMobile) return;
+    if (e.pointerType === 'mouse') return;
+    if (activeFootage) return;
+    if (!cursorDraggingRef.current) return;
+    if (cursorDraggingRef.current.pointerId !== e.pointerId) return;
+
+    const t = timeFromClientX(e.clientX);
+    if (timelineState.current) timelineState.current.setTime(t);
+    e.preventDefault();
+  };
+
+  const handleTimelinePointerUp = (e) => {
+    if (!isMobile) return;
+    if (e.pointerType === 'mouse') return;
+    if (activeFootage) return;
+
+    if (cursorDraggingRef.current && cursorDraggingRef.current.pointerId === e.pointerId) {
+      cursorDraggingRef.current = null;
+      try {
+        e.currentTarget?.releasePointerCapture?.(e.pointerId);
+      } catch {
+        // ignore
+      }
+      e.preventDefault();
+      return;
+    }
+
+    const start = timelinePointerDownRef.current;
+    timelinePointerDownRef.current = null;
+    const dx = start ? Math.abs(e.clientX - start.x) : 0;
+    const dy = start ? Math.abs(e.clientY - start.y) : 0;
+    if (dx > 10 || dy > 10) return;
+
+    const target = e.target instanceof HTMLElement ? e.target : null;
+    const actionEl = target?.closest?.('[data-action-id]');
+    const rowId = actionEl?.getAttribute('data-row-id');
+    const actionId = actionEl?.getAttribute('data-action-id');
+    if (rowId && actionId) {
+      setSelectedActionId(actionId);
+      return;
+    }
+
+    const t = timeFromClientX(e.clientX);
+    setSelectedActionId(null);
+    if (timelineState.current) timelineState.current.setTime(t);
+  };
+
+  const ghostLayer = ghostPreview ? (
+    <div className="timeline-ghost-layer" style={{ top: editAreaOffsetTop, left: editAreaOffsetLeft }}>
+      {(() => {
+        const pxPerSec = scaleWidth / scale;
+        const width = ghostPreview.duration * pxPerSec;
+        const left = timeToPixel(ghostPreview.start) - laneScrollLeft;
+
+        const clips = [];
+        if (ghostPreview.kind === 'video') {
+          clips.push({ row: ghostPreview.laneRow, kind: 'video' });
+          clips.push({ row: pairedAudioRowForVideoRow(ghostPreview.laneRow), kind: 'audio' });
+        } else {
+          clips.push({ row: ghostPreview.laneRow, kind: 'audio' });
+        }
+
+        return clips.map((c) => (
+          <div
+            key={`${c.kind}-${c.row}`}
+            className={`timeline-ghost-clip${c.kind === 'video' ? ' is-video' : ' is-audio'}`}
+            style={{
+              left,
+              top: c.row * ROW_HEIGHT_PX - laneScrollTop,
+              width,
+              height: ROW_HEIGHT_PX,
+            }}
+          />
+        ));
+      })()}
+    </div>
+  ) : null;
+
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={rectIntersection}
+      onDragStart={handleDragStart}
+      onDragMove={handleDragMove}
+      onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
+    >
+      <div className="timeline-editor-engine">
+        <div className="footage-bin">
+          {footageItems.map((item) => (
+            <DraggableFootageCard
+              key={item.id}
+              item={item}
+              hint={isMobile ? 'Press-hold, then drag into timeline' : 'Drag into timeline'}
+            />
+          ))}
+        </div>
+
+        <div className="player-panel">
+          <video
+            className="player-video"
+            preload="auto"
+            playsInline
+            muted
+            controls={false}
+            disablePictureInPicture
+            disableRemotePlayback
+            controlsList="nodownload noplaybackrate noremoteplayback"
+            tabIndex={-1}
+            onContextMenu={(e) => e.preventDefault()}
+            ref={(el) => videoControl.attach(el)}
+          />
+        </div>
+
+        <TimelinePlayer
+          timelineState={timelineState}
+          autoScrollWhenPlay={autoScrollWhenPlay}
+          editorData={data}
+          selectedActionId={selectedActionId}
+          onDeleteSelectedClip={deleteSelectedClip}
+          onSplitSelectedClip={splitSelectedClipAtCursor}
+          canUndo={past.length > 0}
+          canRedo={future.length > 0}
+          onUndo={undo}
+          onRedo={redo}
+        />
+
+        <div
+          className={`timeline-drop${isTimelineOver ? ' is-over' : ''}`}
+          ref={(node) => {
+            timelineWrapRef.current = node;
+            setTimelineDropRef(node);
+          }}
+          onPointerDown={handleTimelinePointerDown}
+          onPointerMove={handleTimelinePointerMove}
+          onPointerUp={handleTimelinePointerUp}
+        >
+          <div
+            className="timeline-lane-labels"
+            style={{
+              top: editAreaOffsetTop,
+              transform: `translateY(${-laneScrollTop}px)`,
+              height: ROW_HEIGHT_PX * LANE_LABELS.length,
+            }}
+          >
+            {LANE_LABELS.map((label, idx) => (
+              <div
+                key={label}
+                className={`timeline-lane-label${hoveredDropRowIndex === idx ? ' is-hover' : ''}`}
+                style={{ height: ROW_HEIGHT_PX }}
+              >
+                {label}
+              </div>
+            ))}
+          </div>
+
+          {ghostLayer}
+
+          <Timeline
+            scale={scale}
+            scaleWidth={scaleWidth}
+            startLeft={startLeft}
+            rowHeight={ROW_HEIGHT_PX}
+            autoScroll={true}
+            ref={timelineState}
+            editorData={editorDataForRender}
+            effects={effects}
+            onScroll={(params) => {
+              const st = Number(params?.scrollTop ?? 0);
+              const sl = Number(params?.scrollLeft ?? 0);
+              if (Number.isFinite(st)) setLaneScrollTop(st);
+              if (Number.isFinite(sl)) setLaneScrollLeft(sl);
+            }}
+            onClickTimeArea={() => {
+              setSelectedActionId(null);
+              return undefined;
+            }}
+            onClickRow={(e) => {
+              const target = e.target instanceof HTMLElement ? e.target : null;
+              if (target?.closest?.('.timeline-editor-action')) return;
+              setSelectedActionId(null);
+            }}
+            onClickActionOnly={(_e, { action }) => {
+              const clickedAction = action;
+              if (!clickedAction?.id) return;
+              setSelectedActionId(String(clickedAction.id));
+            }}
+            onActionMoveStart={({ action }) => {
+              pendingGestureActionIdRef.current = String(action?.id ?? '');
+              snapStateRef.current = { actionId: String(action?.id ?? ''), edge: null };
+
+              const start = Number(action?.start);
+              const end = Number(action?.end);
+              gestureRef.current = {
+                actionId: String(action?.id ?? ''),
+                mode: 'move',
+                dir: null,
+                basePointerTime: null,
+                lastPointerTime: null,
+                initialStart: Number.isFinite(start) ? start : 0,
+                initialEnd: Number.isFinite(end) ? end : 0,
+                takeover: false,
+              };
+              attachGesturePointerTracking();
+
+              if (pendingHistoryBeforeRef.current) return;
+              pendingHistoryBeforeRef.current = structuredClone(data);
+              pendingHistorySignatureRef.current = getTimelineSignature(data);
+            }}
+            onActionMoveEnd={() => {
+              const pendingBefore = pendingHistoryBeforeRef.current;
+              const pendingSig = pendingHistorySignatureRef.current;
+              if (pendingBefore && pendingSig) {
+                const nextSig = getTimelineSignature(dataRef.current);
+                if (nextSig !== pendingSig) pushHistory(pendingBefore);
+              }
+              pendingHistoryBeforeRef.current = null;
+              pendingHistorySignatureRef.current = null;
+              pendingGestureActionIdRef.current = null;
+              snapStateRef.current = { actionId: null, edge: null };
+
+              gestureRef.current = {
+                actionId: null,
+                mode: null,
+                dir: null,
+                basePointerTime: null,
+                lastPointerTime: null,
+                initialStart: 0,
+                initialEnd: 0,
+                takeover: false,
+              };
+              detachGesturePointerTracking();
+            }}
+            onActionResizeStart={({ action }) => {
+              pendingGestureActionIdRef.current = String(action?.id ?? '');
+              snapStateRef.current = { actionId: String(action?.id ?? ''), edge: null };
+
+              const start = Number(action?.start);
+              const end = Number(action?.end);
+              gestureRef.current = {
+                actionId: String(action?.id ?? ''),
+                mode: 'resize',
+                dir: null,
+                basePointerTime: null,
+                lastPointerTime: null,
+                initialStart: Number.isFinite(start) ? start : 0,
+                initialEnd: Number.isFinite(end) ? end : 0,
+                takeover: false,
+              };
+              attachGesturePointerTracking();
+
+              if (pendingHistoryBeforeRef.current) return;
+              pendingHistoryBeforeRef.current = structuredClone(data);
+              pendingHistorySignatureRef.current = getTimelineSignature(data);
+            }}
+            onActionResizeEnd={() => {
+              const pendingBefore = pendingHistoryBeforeRef.current;
+              const pendingSig = pendingHistorySignatureRef.current;
+              if (pendingBefore && pendingSig) {
+                const nextSig = getTimelineSignature(dataRef.current);
+                if (nextSig !== pendingSig) pushHistory(pendingBefore);
+              }
+              pendingHistoryBeforeRef.current = null;
+              pendingHistorySignatureRef.current = null;
+              pendingGestureActionIdRef.current = null;
+              snapStateRef.current = { actionId: null, edge: null };
+
+              gestureRef.current = {
+                actionId: null,
+                mode: null,
+                dir: null,
+                basePointerTime: null,
+                lastPointerTime: null,
+                initialStart: 0,
+                initialEnd: 0,
+                takeover: false,
+              };
+              detachGesturePointerTracking();
+            }}
+            onActionMoving={({ action, row, start, end }) => {
+              const actionId = String(action?.id ?? '');
+              const g = gestureRef.current;
+
+              if (g.takeover && g.mode === 'move' && g.actionId === actionId) {
+                const base = g.basePointerTime;
+                const last = g.lastPointerTime;
+                const delta = base != null && last != null ? last - base : 0;
+                const proposedStart = g.initialStart + delta;
+                const proposedEnd = g.initialEnd + delta;
+                const snapped = maybeSnapToCursorForMove(actionId, proposedStart, proposedEnd);
+                const nextStart = snapped.start;
+                const nextEnd = snapped.end;
+
+                if (wouldOverlapInRow(row, String(action.id), nextStart, nextEnd)) return false;
+
+                const currentRows = dataRef.current;
+                const partner = findLinkedPartner(currentRows, String(action.id));
+                if (partner) {
+                  const partnerRow = currentRows[partner.rowIndex];
+                  if (partnerRow && wouldOverlapInRow(partnerRow, String(partner.action.id), nextStart, nextEnd)) return false;
+                }
+
+                setData((prev) => {
+                  const updated = partner
+                    ? setStartEndForActionAndLinked(prev, String(action.id), nextStart, nextEnd)
+                    : setStartEndForActionOnly(prev, String(action.id), nextStart, nextEnd);
+                  dataRef.current = updated;
+                  return updated;
+                });
+
+                return false;
+              }
+
+              const rawStart = Number(start);
+              const rawEnd = Number(end);
+              if (!Number.isFinite(rawStart) || !Number.isFinite(rawEnd)) return false;
+              if (rawEnd <= rawStart) return false;
+
+              const snapped = maybeSnapToCursorForMove(actionId, rawStart, rawEnd);
+              const nextStart = snapped.start;
+              const nextEnd = snapped.end;
+              if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd)) return false;
+              if (nextEnd <= nextStart) return false;
+
+              if (wouldOverlapInRow(row, String(action.id), nextStart, nextEnd)) return false;
+
+              const currentRows = dataRef.current;
+              const partner = findLinkedPartner(currentRows, String(action.id));
+              if (partner) {
+                const partnerRow = currentRows[partner.rowIndex];
+                if (partnerRow && wouldOverlapInRow(partnerRow, String(partner.action.id), nextStart, nextEnd)) return false;
+              }
+
+              if (partner || snapped.snapped) {
+                setData((prev) => {
+                  const updated = partner
+                    ? setStartEndForActionAndLinked(prev, String(action.id), nextStart, nextEnd)
+                    : setStartEndForActionOnly(prev, String(action.id), nextStart, nextEnd);
+                  dataRef.current = updated;
+                  return updated;
+                });
+              }
+
+              if (snapped.snapped) {
+                const base = gestureRef.current.lastPointerTime;
+                gestureRef.current = {
+                  actionId,
+                  mode: 'move',
+                  dir: null,
+                  basePointerTime: base,
+                  lastPointerTime: gestureRef.current.lastPointerTime,
+                  initialStart: rawStart,
+                  initialEnd: rawEnd,
+                  takeover: true,
+                };
+                attachGesturePointerTracking();
+                return false;
+              }
+            }}
+            onActionResizing={({ action, row, start, end, dir }) => {
+              const actionId = String(action?.id ?? '');
+              const g = gestureRef.current;
+
+              const resizeDir = dir === 'left' ? 'left' : 'right';
+
+              if (g.takeover && g.mode === 'resize' && g.actionId === actionId) {
+                const base = g.basePointerTime;
+                const last = g.lastPointerTime;
+                const delta = base != null && last != null ? last - base : 0;
+
+                const proposedStart = resizeDir === 'left' ? g.initialStart + delta : g.initialStart;
+                const proposedEnd = resizeDir === 'right' ? g.initialEnd + delta : g.initialEnd;
+
+                const snapped = maybeSnapToCursorForResize(actionId, proposedStart, proposedEnd, resizeDir);
+                const nextStart = snapped.start;
+                const nextEnd = snapped.end;
+
+                if (wouldOverlapInRow(row, String(action.id), nextStart, nextEnd)) return false;
+
+                const currentRows = dataRef.current;
+                const partner = findLinkedPartner(currentRows, String(action.id));
+                if (partner) {
+                  const partnerRow = currentRows[partner.rowIndex];
+                  if (partnerRow && wouldOverlapInRow(partnerRow, String(partner.action.id), nextStart, nextEnd)) return false;
+                }
+
+                setData((prev) => {
+                  const updated = partner
+                    ? setStartEndForActionAndLinked(prev, String(action.id), nextStart, nextEnd)
+                    : setStartEndForActionOnly(prev, String(action.id), nextStart, nextEnd);
+                  dataRef.current = updated;
+                  return updated;
+                });
+
+                return false;
+              }
+
+              const rawStart = Number(start);
+              const rawEnd = Number(end);
+              if (!Number.isFinite(rawStart) || !Number.isFinite(rawEnd)) return false;
+              if (rawEnd <= rawStart) return false;
+
+              const snapped = maybeSnapToCursorForResize(actionId, rawStart, rawEnd, resizeDir);
+              const nextStart = snapped.start;
+              const nextEnd = snapped.end;
+              if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd)) return false;
+              if (nextEnd <= nextStart) return false;
+
+              if (wouldOverlapInRow(row, String(action.id), nextStart, nextEnd)) return false;
+
+              const currentRows = dataRef.current;
+              const partner = findLinkedPartner(currentRows, String(action.id));
+              if (partner) {
+                const partnerRow = currentRows[partner.rowIndex];
+                if (partnerRow && wouldOverlapInRow(partnerRow, String(partner.action.id), nextStart, nextEnd)) return false;
+              }
+
+              if (partner || snapped.snapped) {
+                setData((prev) => {
+                  const updated = partner
+                    ? setStartEndForActionAndLinked(prev, String(action.id), nextStart, nextEnd)
+                    : setStartEndForActionOnly(prev, String(action.id), nextStart, nextEnd);
+                  dataRef.current = updated;
+                  return updated;
+                });
+              }
+
+              if (snapped.snapped) {
+                const base = gestureRef.current.lastPointerTime;
+                gestureRef.current = {
+                  actionId,
+                  mode: 'resize',
+                  dir: resizeDir,
+                  basePointerTime: base,
+                  lastPointerTime: gestureRef.current.lastPointerTime,
+                  initialStart: rawStart,
+                  initialEnd: rawEnd,
+                  takeover: true,
+                };
+                attachGesturePointerTracking();
+                return false;
+              }
+            }}
+            onChange={(rows) => {
+              const nextClean = cleanEditorData(rows);
+              const sourceActionId = pendingGestureActionIdRef.current;
+              const nextLinked = sourceActionId ? applyLinkedStartEnd(nextClean, sourceActionId) : nextClean;
+              setData(nextLinked);
+
+              const pendingBefore = pendingHistoryBeforeRef.current;
+              const pendingSig = pendingHistorySignatureRef.current;
+              if (pendingBefore && pendingSig) {
+                const nextSig = getTimelineSignature(nextLinked);
+                if (nextSig !== pendingSig) pushHistory(pendingBefore);
+                pendingHistoryBeforeRef.current = null;
+                pendingHistorySignatureRef.current = null;
+              }
+            }}
+            getActionRender={(action, row) => {
+              if (action.effectId === 'effect0') {
+                return <CustomRender0 action={action} row={row} />;
+              } else if (action.effectId === 'effect2') {
+                return <CustomRender2 action={action} row={row} />;
+              } else if (action.effectId === 'effect1') {
+                return <CustomRender1 action={action} row={row} />;
+              }
+            }}
+          />
+        </div>
+
+        <DragOverlay>
+          {activeFootage ? (
+            <div
+              className="footage-overlay"
+              style={
+                activeFootageSize
+                  ? {
+                      width: activeFootageSize.width,
+                      height: activeFootageSize.height,
+                    }
+                  : undefined
+              }
+            >
+              <FootageCard item={activeFootage} hint="Drop on timeline" isDragging={true} />
+            </div>
+          ) : null}
+        </DragOverlay>
+      </div>
+    </DndContext>
+  );
+}
+```
+
+---
+
+## File: `components/movie/timeline/TimelinePlayer.jsx`
+
+```jsx
+import { Button, Select } from 'antd';
+import { useEffect, useRef, useState } from 'react';
+import { scale, scaleWidth, startLeft } from './timelineConstants';
+import audioControl from './audioControl';
+import videoControl from './videoControl';
+
+const { Option } = Select;
+export const Rates = [0.2, 0.5, 1.0, 1.5, 2.0];
+
+const TimelinePlayer = ({
+  timelineState,
+  autoScrollWhenPlay,
+  editorData,
+  selectedActionId,
+  onDeleteSelectedClip,
+  onSplitSelectedClip,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
+  onExport,
+}) => {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [time, setTime] = useState(0);
+  const [isExporting, setIsExporting] = useState(false);
+  const lastUiUpdateAt = useRef(0);
+  const lastToggleAt = useRef(0);
+  const lastDeleteAt = useRef(0);
+  const lastSplitAt = useRef(0);
+  const lastUndoAt = useRef(0);
+  const lastRedoAt = useRef(0);
+
+  const canDelete = Boolean(selectedActionId);
+
+  const getSelectedActionRange = () => {
+    if (!selectedActionId) return null;
+    const rows = Array.isArray(editorData) ? editorData : [];
+    for (const row of rows) {
+      const actions = row?.actions;
+      if (!Array.isArray(actions)) continue;
+      for (const action of actions) {
+        if (String(action?.id) !== selectedActionId) continue;
+        const start = Number(action?.start);
+        const end = Number(action?.end);
+        if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+        return { start, end };
+      }
+    }
+    return null;
+  };
+
+  const selectedRange = getSelectedActionRange();
+  const canSplit = Boolean(selectedRange && time > selectedRange.start && time < selectedRange.end);
+
+  const isTimeOverVideo = (t) => {
+    const rows = Array.isArray(editorData) ? editorData : [];
+    for (const row of rows) {
+      const actions = row?.actions;
+      if (!Array.isArray(actions)) continue;
+      for (const action of actions) {
+        if (action?.effectId !== 'effect1') continue;
+        const start = Number(action?.start);
+        const end = Number(action?.end);
+        if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+        if (t >= start && t < end) return true;
+      }
+    }
+    return false;
+  };
+
+  const syncBlackFrame = (t) => {
+    const overVideo = isTimeOverVideo(t);
+    if (!overVideo) {
+      videoControl.pause();
+      videoControl.unbindEngine();
+      videoControl.setActive(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!timelineState.current) return;
+    const engine = timelineState.current;
+    const onPlay = () => setIsPlaying(true);
+    const onPaused = () => setIsPlaying(false);
+    const onAfterSetTime = ({ time }) => {
+      setTime(time);
+      syncBlackFrame(time);
+    };
+
+    const onSetTimeByTick = ({ time }) => {
+      const now = performance.now();
+      if (now - lastUiUpdateAt.current < 33) return;
+      lastUiUpdateAt.current = now;
+
+      setTime(time);
+      syncBlackFrame(time);
+
+      if (autoScrollWhenPlay.current) {
+        const autoScrollFrom = 500;
+        const left = time * (scaleWidth / scale) + startLeft - autoScrollFrom;
+        const state = timelineState.current;
+        if (state) state.setScrollLeft(left);
+      }
+    };
+
+    engine.listener.on('play', onPlay);
+    engine.listener.on('paused', onPaused);
+    engine.listener.on('afterSetTime', onAfterSetTime);
+    engine.listener.on('setTimeByTick', onSetTimeByTick);
+
+    return () => {
+      engine.listener.off('play', onPlay);
+      engine.listener.off('paused', onPaused);
+      engine.listener.off('afterSetTime', onAfterSetTime);
+      engine.listener.off('setTimeByTick', onSetTimeByTick);
+    };
+  }, [editorData]);
+
+  const handlePlayOrPause = () => {
+    if (!timelineState.current) return;
+    if (timelineState.current.isPlaying) {
+      timelineState.current.pause();
+    } else {
+      audioControl.unlock();
+      timelineState.current.play({ autoEnd: true });
+    }
+  };
+
+  const handleRateChange = (rate) => {
+    if (!timelineState.current) return;
+    timelineState.current.setPlayRate(rate);
+  };
+
+  const timeRender = (time) => {
+    const float = (parseInt((time % 1) * 100 + '') + '').padStart(2, '0');
+    const min = (parseInt(time / 60 + '') + '').padStart(2, '0');
+    const second = (parseInt((time % 60) + '') + '').padStart(2, '0');
+    return <>{`${min}:${second}.${float.replace('0.', '')}`}</>;
+  };
+
+  const collectUniqueAssetSrcs = () => {
+    const out = [];
+    const seen = new Set();
+    const rows = Array.isArray(editorData) ? editorData : [];
+    for (const row of rows) {
+      const actions = row?.actions;
+      if (!Array.isArray(actions)) continue;
+      for (const action of actions) {
+        const src = action?.data?.src;
+        if (!src) continue;
+        const key = String(src);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(key);
+      }
+    }
+    return out;
+  };
+
+  const downloadBlob = (blob, filename) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 3_000);
+  };
+
+  const handleExportDefault = async () => {
+    const srcs = collectUniqueAssetSrcs();
+    const form = new FormData();
+    form.append('timeline', JSON.stringify({ editorData }));
+
+    for (const src of srcs) {
+      const resp = await fetch(src);
+      if (!resp.ok) throw new Error(`Failed to fetch asset: ${src} (${resp.status})`);
+      const blob = await resp.blob();
+      form.append('assets', blob, encodeURIComponent(src));
+    }
+
+    const resp = await fetch('/export', {
+      method: 'POST',
+      body: form,
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(text || `Export failed (${resp.status})`);
+    }
+
+    const blob = await resp.blob();
+    downloadBlob(blob, 'export.mp4');
+  };
+
+  const handleExport = async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    try {
+      if (onExport) {
+        await onExport();
+      } else {
+        await handleExportDefault();
+      }
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  return (
+    <div className="timeline-player">
+      <div
+        className="play-control"
+        role="button"
+        tabIndex={0}
+        aria-label={isPlaying ? 'Pause' : 'Play'}
+        onClick={() => {
+          if (Date.now() - lastToggleAt.current < 450) return;
+          handlePlayOrPause();
+        }}
+        onPointerUp={(e) => {
+          if (e.pointerType === 'mouse') return;
+          lastToggleAt.current = Date.now();
+          handlePlayOrPause();
+        }}
+      >
+        <img src={isPlaying ? '/pause-button.png' : '/play-button.png'} alt="" draggable={false} />
+      </div>
+      <div className="time">{timeRender(time)}</div>
+
+      <div className="history-tools">
+        <button
+          type="button"
+          className="history-tool"
+          disabled={!canUndo}
+          aria-label="Undo"
+          onClick={() => {
+            if (Date.now() - lastUndoAt.current < 450) return;
+            if (!canUndo) return;
+            onUndo();
+          }}
+          onPointerUp={(e) => {
+            if (e.pointerType === 'mouse') return;
+            lastUndoAt.current = Date.now();
+            if (!canUndo) return;
+            onUndo();
+          }}
+        >
+          <img src="/undo.png" alt="" draggable={false} />
+        </button>
+
+        <button
+          type="button"
+          className="history-tool"
+          disabled={!canRedo}
+          aria-label="Redo"
+          onClick={() => {
+            if (Date.now() - lastRedoAt.current < 450) return;
+            if (!canRedo) return;
+            onRedo();
+          }}
+          onPointerUp={(e) => {
+            if (e.pointerType === 'mouse') return;
+            lastRedoAt.current = Date.now();
+            if (!canRedo) return;
+            onRedo();
+          }}
+        >
+          <img src="/redo.png" alt="" draggable={false} />
+        </button>
+      </div>
+
+      <div className="rate-control">
+        <Select size={'small'} defaultValue={1} style={{ width: 120 }} onChange={handleRateChange}>
+          {Rates.map((rate) => (
+            <Option key={rate} value={rate}>{`${rate.toFixed(1)}x`}</Option>
+          ))}
+        </Select>
+      </div>
+
+      <div className="clip-tools">
+        <button
+          type="button"
+          className="clip-tool clip-tool-delete"
+          disabled={!canDelete}
+          aria-label="Delete selected clip"
+          onClick={() => {
+            if (Date.now() - lastDeleteAt.current < 450) return;
+            if (!canDelete) return;
+            onDeleteSelectedClip();
+          }}
+          onPointerUp={(e) => {
+            if (e.pointerType === 'mouse') return;
+            lastDeleteAt.current = Date.now();
+            if (!canDelete) return;
+            onDeleteSelectedClip();
+          }}
+        >
+          <img src="/bin.png" alt="" draggable={false} />
+        </button>
+
+        <button
+          type="button"
+          className="clip-tool clip-tool-split"
+          disabled={!canSplit}
+          aria-label="Split selected clip at cursor"
+          onClick={() => {
+            if (Date.now() - lastSplitAt.current < 450) return;
+            if (!canSplit) return;
+            onSplitSelectedClip();
+          }}
+          onPointerUp={(e) => {
+            if (e.pointerType === 'mouse') return;
+            lastSplitAt.current = Date.now();
+            if (!canSplit) return;
+            onSplitSelectedClip();
+          }}
+        >
+          <img src="/split.png" alt="" draggable={false} />
+        </button>
+      </div>
+
+      <div className="export-control">
+        <Button size="small" type="primary" loading={isExporting} onClick={handleExport}>
+          Export
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+export default TimelinePlayer;
+```
+
+---
+
+## File: `components/movie/timeline/timelineEditor.css`
+
+This is a plain-CSS adaptation of the repo’s LESS. If Base44 supports LESS, you can keep it as-is.
+
+```css
+/* Ant Design CSS must be loaded somewhere (root or editor): import 'antd/dist/antd.css'; */
+
+.timeline-editor-engine {
+  touch-action: pan-y;
+}
+
+.timeline-editor-engine .footage-card {
+  background: #2b2b2b;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  padding: 8px;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+.timeline-editor-engine .footage-card.is-dragging {
+  opacity: 0.65;
+}
+
+.timeline-editor-engine .footage-card:active {
+  cursor: grabbing;
+}
+
+.timeline-editor-engine .footage-name {
+  font-size: 12px;
+  color: #ddd;
+  margin-bottom: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.timeline-editor-engine .footage-preview {
+  width: 100%;
+  height: 90px;
+  display: block;
+  object-fit: cover;
+  background: #000;
+  border-radius: 4px;
+}
+
+.timeline-editor-engine .footage-audio {
+  width: 100%;
+  height: 32px;
+}
+
+.timeline-editor-engine .footage-kind {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #aaa;
+}
+
+.timeline-editor-engine .footage-bin {
+  width: 100%;
+  max-width: 800px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.timeline-editor-engine .player-panel {
+  width: 100%;
+  max-width: 800px;
+  height: 300px;
+  position: relative;
+  background: #000;
+}
+
+.timeline-editor-engine .player-panel .player-video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  background: #000;
+  pointer-events: none;
+}
+
+.timeline-editor-engine .timeline-editor {
+  width: 100%;
+  max-width: 800px;
+  height: 300px;
+}
+
+.timeline-editor-engine .timeline-editor-action {
+  height: 28px !important;
+  top: 50%;
+  transform: translateY(-50%);
+  border-radius: 4px;
+}
+
+.timeline-editor-engine .timeline-editor-action.timeline-editor-action-selected {
+  box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.55);
+  outline: 2px solid rgba(255, 255, 255, 0.35);
+  outline-offset: -2px;
+}
+
+.timeline-editor-engine .timeline-editor-action.timeline-editor-action-selected .effect0-text,
+.timeline-editor-engine .timeline-editor-action.timeline-editor-action-selected .effect1-text,
+.timeline-editor-engine .timeline-editor-action.timeline-editor-action-selected .effect2-text {
+  font-weight: 700;
+}
+
+.timeline-editor-engine .timeline-editor-action-effect-effect0,
+.timeline-editor-engine .timeline-editor-action-effect-effect2 {
+  background-color: #cd9541;
+  background-image: url('/assets/soundWave.png');
+}
+
+.timeline-editor-engine .timeline-editor-action-effect-effect1 {
+  background-color: #7846a7;
+}
+
+.timeline-editor-engine .timeline-editor-action-effect-effect0,
+.timeline-editor-engine .timeline-editor-action-effect-effect1,
+.timeline-editor-engine .timeline-editor-action-effect-effect2 {
+  cursor: pointer;
+  touch-action: none;
+  background-position: bottom;
+  background-repeat: repeat-x;
+}
+
+.timeline-editor-engine .timeline-editor-action-effect-effect0 .effect0,
+.timeline-editor-engine .timeline-editor-action-effect-effect1 .effect1,
+.timeline-editor-engine .timeline-editor-action-effect-effect2 .effect2 {
+  width: 100%;
+  height: 100%;
+  font-size: 10px;
+  color: #fff;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+}
+
+.timeline-editor-engine .timeline-editor-action-effect-effect0 .effect0-text,
+.timeline-editor-engine .timeline-editor-action-effect-effect1 .effect1-text,
+.timeline-editor-engine .timeline-editor-action-effect-effect2 .effect2-text {
+  margin-left: 4px;
+  flex: 1 1 auto;
+  text-align: center;
+  display: flex;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.timeline-editor-engine .timeline-drop {
+  position: relative;
+}
+
+.timeline-editor-engine .timeline-editor-cursor,
+.timeline-editor-engine .timeline-editor-cursor-area {
+  touch-action: none;
+}
+
+.timeline-editor-engine .timeline-player {
+  height: 28px;
+  width: 100%;
+  max-width: 800px;
+  padding: 0 6px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  background-color: #3a3a3a;
+  color: #ddd;
+}
+
+.timeline-editor-engine .timeline-player .play-control {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  display: flex;
+  background-color: #666;
+  justify-content: center;
+  align-items: center;
+}
+
+.timeline-editor-engine .timeline-player .play-control img,
+.timeline-editor-engine .timeline-player .history-tool img,
+.timeline-editor-engine .timeline-player .clip-tool img {
+  width: 12px;
+  height: 12px;
+  display: block;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
+}
+
+.timeline-editor-engine .timeline-player .time {
+  font-size: 11px;
+  margin: 0 8px;
+  width: 58px;
+}
+
+.timeline-editor-engine .timeline-player .history-tools {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 3px;
+}
+
+.timeline-editor-engine .timeline-player .history-tool,
+.timeline-editor-engine .timeline-player .clip-tool {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background-color: #666;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.timeline-editor-engine .timeline-player .history-tool:disabled,
+.timeline-editor-engine .timeline-player .clip-tool:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.timeline-editor-engine .timeline-player .rate-control {
+  margin-left: auto;
+}
+
+.timeline-editor-engine .timeline-player .clip-tools {
+  margin-left: 6px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 3px;
+}
+
+.timeline-editor-engine .timeline-player .clip-tool-delete:not(:disabled) {
+  background-color: rgb(165, 79, 79);
+}
+
+.timeline-editor-engine .timeline-player .export-control {
+  margin-left: 6px;
+}
+
+@media (pointer: coarse) {
+  .timeline-editor-engine .footage-bin {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .timeline-editor-engine .footage-bin .footage-card {
+    touch-action: none;
+  }
+
+  .timeline-editor-engine .player-panel {
+    height: 220px;
+  }
+
+  .timeline-editor-engine .timeline-editor {
+    height: 360px;
+  }
+
+  .timeline-editor-engine .timeline-editor-action {
+    height: 40px !important;
+  }
+
+  .timeline-editor-engine .timeline-editor-cursor-area {
+    width: 36px;
+  }
+
+  .timeline-editor-engine .timeline-player .play-control,
+  .timeline-editor-engine .timeline-player .clip-tool,
+  .timeline-editor-engine .timeline-player .history-tool {
+    width: 20px;
+    height: 20px;
+  }
+}
+
+.timeline-editor-engine .timeline-drop.is-over {
+  outline: 2px dashed rgba(255, 255, 255, 0.25);
+  outline-offset: 4px;
+}
+
+.timeline-editor-engine .timeline-editor-edit-row.dnd-drop-hover {
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.timeline-editor-engine .timeline-lane-labels {
+  position: absolute;
+  left: 0;
+  width: 22px;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  z-index: 3;
+}
+
+.timeline-editor-engine .timeline-lane-label {
+  width: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(0, 0, 0, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.timeline-editor-engine .timeline-lane-label.is-hover {
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.timeline-editor-engine .timeline-ghost-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.timeline-editor-engine .timeline-ghost-clip {
+  position: absolute;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.timeline-editor-engine .timeline-ghost-clip.is-video {
+  background: rgba(120, 70, 167, 0.18);
+}
+
+.timeline-editor-engine .timeline-ghost-clip.is-audio {
+  background: rgba(205, 149, 65, 0.18);
+}
+```
+
+---
+
+## File: `server/exportServer.mjs` (reference implementation)
+
+This is the exact Express+ffmpeg server used by this repo, provided so Base44 can recreate the same behavior even without this repo.
+
+If Base44 doesn’t support Express, implement the same endpoint contract and ffmpeg args generation using Base44’s backend framework.
+
+```js
+import express from 'express';
+import multer from 'multer';
+import path from 'path';
+import os from 'os';
+import fs from 'fs';
+import fsp from 'fs/promises';
+import { spawn } from 'child_process';
+import { randomUUID } from 'crypto';
+
+const PORT = Number(process.env.EXPORT_SERVER_PORT ?? 5174);
+const FFMPEG_PATH = process.env.FFMPEG_PATH ?? 'ffmpeg';
+
+const TARGET_WIDTH = Number(process.env.EXPORT_WIDTH ?? 1280);
+const TARGET_HEIGHT = Number(process.env.EXPORT_HEIGHT ?? 720);
+const TARGET_FPS = Number(process.env.EXPORT_FPS ?? 30);
+const TARGET_AUDIO_RATE = Number(process.env.EXPORT_AUDIO_RATE ?? 48000);
+
+const app = express();
+
+app.get('/health', (_req, res) => {
+  res.json({ ok: true });
+});
+
+function safeDecodeFilename(name) {
+  if (!name) return '';
+  try {
+    return decodeURIComponent(name);
+  } catch {
+    return name;
+  }
+}
+
+function clampNonNegativeNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, n);
+}
+
+function buildSegments(editorData, kind) {
+  const effectIds = kind === 'video' ? ['effect1'] : ['effect0', 'effect2'];
+  const actions = [];
+  const rows = Array.isArray(editorData) ? editorData : [];
+  for (const row of rows) {
+    const rowActions = row?.actions;
+    if (!Array.isArray(rowActions)) continue;
+    for (const action of rowActions) {
+      if (!action) continue;
+      if (!effectIds.includes(String(action.effectId))) continue;
+      const start = clampNonNegativeNumber(action.start);
+      const end = clampNonNegativeNumber(action.end);
+      const src = action?.data?.src;
+      if (!src) continue;
+      if (end <= start) continue;
+      actions.push({ start, end, src: String(src) });
+    }
+  }
+
+  actions.sort((a, b) => a.start - b.start);
+
+  const segments = [];
+  let t = 0;
+  for (const a of actions) {
+    const start = Math.max(t, a.start);
+    const end = Math.max(start, a.end);
+    if (start > t) segments.push({ type: 'gap', duration: start - t });
+    if (end > start) segments.push({ type: 'clip', duration: end - start, src: a.src });
+    t = Math.max(t, end);
+  }
+  return { segments, actions };
+}
+
+function collectActions(editorData, effectIds) {
+  const actions = [];
+  const rows = Array.isArray(editorData) ? editorData : [];
+  for (const row of rows) {
+    const rowActions = row?.actions;
+    if (!Array.isArray(rowActions)) continue;
+    for (const action of rowActions) {
+      if (!action) continue;
+      if (!effectIds.includes(String(action.effectId))) continue;
+      const start = clampNonNegativeNumber(action.start);
+      const end = clampNonNegativeNumber(action.end);
+      const src = action?.data?.src;
+      if (!src) continue;
+      if (end <= start) continue;
+      actions.push({ start, end, src: String(src) });
+    }
+  }
+  actions.sort((a, b) => a.start - b.start);
+  return actions;
+}
+
+function getTotalDuration(editorData) {
+  let maxEnd = 0;
+  const rows = Array.isArray(editorData) ? editorData : [];
+  for (const row of rows) {
+    const actions = row?.actions;
+    if (!Array.isArray(actions)) continue;
+    for (const action of actions) {
+      const end = clampNonNegativeNumber(action?.end);
+      if (end > maxEnd) maxEnd = end;
+    }
+  }
+  return maxEnd;
+}
+
+function uniqueStrings(items) {
+  const seen = new Set();
+  const out = [];
+  for (const item of items) {
+    if (!item) continue;
+    if (seen.has(item)) continue;
+    seen.add(item);
+    out.push(item);
+  }
+  return out;
+}
+
+function buildFfmpegArgs({ editorData, assetsBySrc, outPath }) {
+  const totalDuration = getTotalDuration(editorData);
+  const safeTotalDuration = totalDuration > 0 ? totalDuration : 0.04;
+
+  const videoPlan = buildSegments(editorData, 'video');
+  const audioActions = collectActions(editorData, ['effect0', 'effect2']);
+
+  const videoSegments = videoPlan.segments.length ? [...videoPlan.segments] : [{ type: 'gap', duration: totalDuration }];
+
+  const sumDur = (segs) => segs.reduce((acc, s) => acc + (Number(s.duration) || 0), 0);
+  const vSum = sumDur(videoSegments);
+  if (totalDuration > vSum) videoSegments.push({ type: 'gap', duration: totalDuration - vSum });
+
+  const videoSrcs = uniqueStrings(videoSegments.filter((s) => s.type === 'clip').map((s) => s.src));
+  const audioSrcs = uniqueStrings(audioActions.map((a) => a.src));
+
+  for (const src of [...videoSrcs, ...audioSrcs]) {
+    if (!assetsBySrc.get(src)) {
+      const err = new Error(`Missing asset for src: ${src}`);
+      err.code = 'MISSING_ASSET';
+      throw err;
+    }
+  }
+
+  const args = ['-y', '-hide_banner', '-loglevel', 'error'];
+
+  const inputIndexBySrc = new Map();
+  let inputIndex = 0;
+
+  for (const src of videoSrcs) {
+    const filePath = assetsBySrc.get(src);
+    inputIndexBySrc.set(src, inputIndex++);
+    args.push('-i', filePath);
+  }
+
+  for (const src of audioSrcs) {
+    const filePath = assetsBySrc.get(src);
+    inputIndexBySrc.set(src, inputIndex++);
+    args.push('-stream_loop', '-1', '-i', filePath);
+  }
+
+  const filters = [];
+
+  const vLabels = [];
+  for (let i = 0; i < videoSegments.length; i++) {
+    const seg = videoSegments[i];
+    const dur = Number(seg.duration);
+    if (!Number.isFinite(dur) || dur <= 0) continue;
+
+    const label = `vseg${vLabels.length}`;
+    if (seg.type === 'gap') {
+      filters.push(
+        `color=c=black:s=${TARGET_WIDTH}x${TARGET_HEIGHT}:r=${TARGET_FPS}:d=${dur},format=yuv420p[${label}]`
+      );
+    } else {
+      const idx = inputIndexBySrc.get(seg.src);
+      filters.push(
+        `[${idx}:v]trim=start=0:duration=${dur},setpts=PTS-STARTPTS,fps=${TARGET_FPS},` +
+          `scale=${TARGET_WIDTH}:${TARGET_HEIGHT}:force_original_aspect_ratio=decrease,` +
+          `pad=${TARGET_WIDTH}:${TARGET_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black,` +
+          `format=yuv420p[${label}]`
+      );
+    }
+    vLabels.push(`[${label}]`);
+  }
+
+  if (!vLabels.length) {
+    filters.push(`color=c=black:s=${TARGET_WIDTH}x${TARGET_HEIGHT}:r=${TARGET_FPS}:d=0.04,format=yuv420p[vseg0]`);
+    vLabels.push('[vseg0]');
+  }
+
+  filters.push(`${vLabels.join('')}concat=n=${vLabels.length}:v=1:a=0[vout]`);
+
+  const aLabels = [];
+  if (audioActions.length) {
+    filters.push(`anullsrc=r=${TARGET_AUDIO_RATE}:cl=stereo:d=${safeTotalDuration}[abase]`);
+
+    for (const action of audioActions) {
+      const dur = Number(action.end) - Number(action.start);
+      if (!Number.isFinite(dur) || dur <= 0) continue;
+      const idx = inputIndexBySrc.get(action.src);
+      const delayMs = Math.max(0, Math.round(Number(action.start) * 1000));
+      const label = `am${aLabels.length}`;
+      filters.push(
+        `[${idx}:a]atrim=start=0:duration=${dur},asetpts=PTS-STARTPTS,` +
+          `aresample=${TARGET_AUDIO_RATE}:async=1,adelay=${delayMs}|${delayMs}[${label}]`
+      );
+      aLabels.push(`[${label}]`);
+    }
+
+    const mixInputs = ['[abase]', ...aLabels];
+    filters.push(
+      `${mixInputs.join('')}amix=inputs=${mixInputs.length}:normalize=0:duration=longest,` +
+        `atrim=0:${safeTotalDuration},asetpts=PTS-STARTPTS[aout]`
+    );
+  }
+
+  args.push('-filter_complex', filters.join(';'));
+  args.push('-map', '[vout]');
+  if (audioActions.length && aLabels.length) {
+    args.push('-map', '[aout]');
+  } else {
+    args.push('-an');
+  }
+
+  args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-movflags', '+faststart');
+  if (aLabels.length) {
+    args.push('-c:a', 'aac', '-b:a', '192k');
+  }
+
+  args.push(outPath);
+  return args;
+}
+
+function runFfmpeg(args, { cwd }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(FFMPEG_PATH, args, {
+      cwd,
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8');
+      if (stderr.length > 64_000) stderr = stderr.slice(-64_000);
+    });
+
+    child.on('error', (err) => {
+      reject(err);
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) return resolve({ stderr });
+      const err = new Error(`ffmpeg failed with code ${code}. ${stderr}`);
+      err.code = 'FFMPEG_FAILED';
+      reject(err);
+    });
+  });
+}
+
+app.post(
+  '/export',
+  (req, _res, next) => {
+    req._exportTmpDir = path.join(os.tmpdir(), `timeline-export-${randomUUID()}`);
+    fs.mkdirSync(req._exportTmpDir, { recursive: true });
+    next();
+  },
+  multer({
+    storage: multer.diskStorage({
+      destination: (req, _file, cb) => cb(null, req._exportTmpDir),
+      filename: (_req, file, cb) => {
+        const safe = `asset-${randomUUID()}${path.extname(file.originalname || '')}`;
+        cb(null, safe);
+      },
+    }),
+    limits: {
+      fileSize: Number(process.env.EXPORT_MAX_FILE_BYTES ?? 2_000_000_000),
+      files: Number(process.env.EXPORT_MAX_FILES ?? 64),
+    },
+  }).array('assets'),
+  async (req, res) => {
+    const tmpDir = req._exportTmpDir;
+    let cleanedUp = false;
+    const cleanup = async () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      try {
+        await fsp.rm(tmpDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    };
+
+    res.on('close', cleanup);
+    res.on('finish', cleanup);
+
+    try {
+      const timelineRaw = req.body?.timeline;
+      if (!timelineRaw) {
+        res.status(400).json({ error: 'Missing `timeline` field (JSON string).' });
+        return;
+      }
+
+      let timeline;
+      try {
+        timeline = JSON.parse(String(timelineRaw));
+      } catch {
+        res.status(400).json({ error: 'Invalid JSON in `timeline`.' });
+        return;
+      }
+
+      const editorData = timeline?.editorData;
+      if (!Array.isArray(editorData)) {
+        res.status(400).json({ error: '`timeline.editorData` must be an array.' });
+        return;
+      }
+
+      const files = Array.isArray(req.files) ? req.files : [];
+      const assetsBySrc = new Map();
+      for (const f of files) {
+        const original = safeDecodeFilename(f.originalname);
+        const src = original;
+        if (!src) continue;
+        assetsBySrc.set(src, f.path);
+      }
+
+      const outPath = path.join(tmpDir, 'export.mp4');
+      const ffmpegArgs = buildFfmpegArgs({ editorData, assetsBySrc, outPath });
+      await runFfmpeg(ffmpegArgs, { cwd: tmpDir });
+
+      res.download(outPath, 'export.mp4');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const code = err?.code;
+      if (code === 'MISSING_ASSET') {
+        res.status(400).json({ error: msg });
+        return;
+      }
+      res.status(500).json({ error: msg });
+    }
+  }
+);
+
+app.listen(PORT, () => {
+  console.log(`Export server listening on http://localhost:${PORT}`);
+});
+```

@@ -6,7 +6,6 @@ class VideoControl {
   private currentSrc: string | null = null;
   private lastSeekAtMs = 0;
   private lastRate: number | null = null;
-  private isActive = false;
 
   private boundEngine: TimelineEngine | null = null;
   private boundActionStart = 0;
@@ -26,7 +25,6 @@ class VideoControl {
   }
 
   setActive(active: boolean) {
-    this.isActive = active;
     if (!this.videoEl) return;
     // Show black when inactive by hiding the video element.
     this.videoEl.style.opacity = active ? '1' : '0';

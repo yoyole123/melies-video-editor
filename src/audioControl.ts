@@ -1,5 +1,5 @@
 import { Howl, Howler } from 'howler';
-import { TimelineEngine } from '@xzdarcy/react-timeline-editor';
+import type { TimelineEngine } from '@xzdarcy/react-timeline-editor';
 import mediaCache from './mediaCache';
 
 const inferHowlerFormat = (src: string): string | undefined => {

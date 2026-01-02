@@ -1,4 +1,4 @@
-import lottie, { AnimationItem } from 'lottie-web';
+import lottie, { type AnimationItem } from 'lottie-web';
 
 class LottieControl {
   cacheMap: Record<string, AnimationItem> = {};
@@ -20,6 +20,7 @@ class LottieControl {
       this._goToAndStop(item, time);
     } else {
       const ground = document.getElementById('player-ground-1');
+      if (!ground) return;
       item = lottie.loadAnimation({
         name: id,
         container: ground,
@@ -40,7 +41,7 @@ class LottieControl {
   }
 
   update(data: { id: string; src: string; startTime: number; endTime: number; time: number }) {
-    const { id, startTime, endTime, time } = data;
+    const { id, startTime, time } = data;
     const item = this.cacheMap[id];
     if (!item) return;
     this._goToAndStop(item, time - startTime);

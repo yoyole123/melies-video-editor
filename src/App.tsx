@@ -5,7 +5,7 @@ import { CustomRender0, CustomRender1, CustomRender2 } from './custom';
 import './index.less';
 import { mockData, mockEffect, scale, scaleWidth, startLeft } from './mock';
 import type { CustomTimelineAction, CusTomTimelineRow } from './mock';
-import { FOOTAGE_BIN, type FootageItem } from './footageBin';
+import type { FootageItem } from './footageBin';
 import TimelinePlayer from './player';
 import videoControl from './videoControl';
 import mediaCache from './mediaCache';
@@ -77,7 +77,31 @@ const DraggableFootageCard = ({ item, hint }: { item: FootageItem; hint: string 
   );
 };
 
-const TimelineEditor = () => {
+export type MeliesVideoEditorProps = {
+  /**
+   * URLs (often blob: URLs) to show in the footage bin.
+   * When omitted or empty, the footage bin will be empty.
+   */
+  footageUrls?: string[];
+};
+
+const inferFootageKindFromUrl = (url: string): FootageItem['kind'] => {
+  const u = String(url ?? '').toLowerCase();
+  if (u.match(/\.(mp3|wav|m4a|aac|ogg)(\?|#|$)/)) return 'audio';
+  return 'video';
+};
+
+const nameFromUrl = (url: string, index: number) => {
+  try {
+    const last = String(url ?? '').split('/').pop() || '';
+    const clean = decodeURIComponent(last.split('?')[0].split('#')[0]);
+    return clean || `Footage ${index + 1}`;
+  } catch {
+    return `Footage ${index + 1}`;
+  }
+};
+
+const MeliesVideoEditor = ({ footageUrls }: MeliesVideoEditorProps) => {
   const [data, setData] = useState<CusTomTimelineRow[]>(defaultEditorData as CusTomTimelineRow[]);
   const [selectedActionId, setSelectedActionId] = useState<string | null>(null);
   const [past, setPast] = useState<CusTomTimelineRow[][]>([]);
@@ -88,6 +112,19 @@ const TimelineEditor = () => {
   const playerPanel = useRef<HTMLDivElement | null>(null);
   const timelineWrapRef = useRef<HTMLDivElement | null>(null);
   const autoScrollWhenPlay = useRef<boolean>(true);
+
+  const footageBin = useMemo<FootageItem[]>(() => {
+    const urls = Array.isArray(footageUrls) ? footageUrls.filter(Boolean) : [];
+    if (!urls.length) return [];
+    return urls.map((src, index) => ({
+      id: `url-${index}`,
+      kind: inferFootageKindFromUrl(src),
+      name: nameFromUrl(src, index),
+      src,
+      defaultDuration: 10,
+    }));
+  }, [footageUrls]);
+
   const [activeFootage, setActiveFootage] = useState<FootageItem | null>(null);
   const [activeFootageSize, setActiveFootageSize] = useState<{ width: number; height: number } | null>(null);
   const [hoveredDropRowIndex, setHoveredDropRowIndex] = useState<number | null>(null);
@@ -1178,7 +1215,7 @@ const TimelineEditor = () => {
       <div className="timeline-editor-engine">
         <div className="player-config">
           <div className="footage-bin">
-            {FOOTAGE_BIN.map((item) => (
+            {footageBin.map((item) => (
               <DraggableFootageCard
                 key={item.id}
                 item={item}
@@ -1249,7 +1286,6 @@ const TimelineEditor = () => {
                 const pxPerSec = scaleWidth / scale;
                 const width = ghostPreview.duration * pxPerSec;
                 const left = timeToPixel(ghostPreview.start) - laneScrollLeft;
-                const top = ghostPreview.laneRow * ROW_HEIGHT_PX - laneScrollTop;
 
                 const clips: Array<{ row: number; kind: 'video' | 'audio' }> = [];
                 if (ghostPreview.kind === 'video') {
@@ -1623,4 +1659,4 @@ const TimelineEditor = () => {
     </DndContext>
   );
 };
-export default TimelineEditor;
+export default MeliesVideoEditor;

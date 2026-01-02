@@ -1,85 +1,28 @@
-# React + TypeScript + Vite
+# Video Editor GUI (React)
 
-## Export (MP4)
+This repo builds and publishes a reusable React video timeline editor GUI.
 
-This repo includes a simple Express + ffmpeg export server.
+**Upstream credit:** The timeline editor UI and data model are built on top of **@xzdarcy/react-timeline-editor** (MIT License) by **zdarcy**.
+- NPM: https://www.npmjs.com/package/@xzdarcy/react-timeline-editor
+- License: MIT (see the upstream package for the full text)
 
-- Start the UI: `pnpm dev`
+This project is not affiliated with the upstream author.
+
+## Local development
+
+- Start the UI (demo app): `pnpm dev`
+
+## Build (library)
+
+- Build the npm package output into `dist/`: `pnpm build`
+
+## Export server (local-only)
+
+This repo also contains a simple Express + ffmpeg export server used for local development.
+
 - Start the export server (separate terminal): `pnpm dev:server`
-- In the UI (bottom bar), click **Export** to download `export.mp4`
 
 Notes:
-- Requires `ffmpeg` to be installed and available on `PATH` (or set `FFMPEG_PATH`).
+- Requires `ffmpeg` available on `PATH` (or set `FFMPEG_PATH`).
 - Vite dev server proxies `/export` to `http://localhost:5174` (see `vite.config.ts`).
-
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
-
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
-
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+- The `server/` folder is **not** included in the published npm package.
