@@ -4,6 +4,12 @@ import { useEffect, useRef, useState } from 'react';
 import { scale, scaleWidth, startLeft } from './mock';
 import audioControl from './audioControl';
 import videoControl from './videoControl';
+import playButtonUrl from './assets/play-button.png';
+import pauseButtonUrl from './assets/pause-button.png';
+import undoIconUrl from './assets/undo.png';
+import redoIconUrl from './assets/redo.png';
+import binIconUrl from './assets/bin.png';
+import splitIconUrl from './assets/split.png';
 
 const { Option } = Select;
 export const Rates = [0.2, 0.5, 1.0, 1.5, 2.0];
@@ -241,7 +247,7 @@ const TimelinePlayer = ({
         }}
       >
         <img
-          src={isPlaying ? '/pause-button.png' : '/play-button.png'}
+          src={isPlaying ? pauseButtonUrl : playButtonUrl}
           alt=""
           draggable={false}
         />
@@ -266,7 +272,7 @@ const TimelinePlayer = ({
             onUndo();
           }}
         >
-          <img src="/undo.png" alt="" draggable={false} />
+          <img src={undoIconUrl} alt="" draggable={false} />
         </button>
 
         <button
@@ -286,7 +292,7 @@ const TimelinePlayer = ({
             onRedo();
           }}
         >
-          <img src="/redo.png" alt="" draggable={false} />
+          <img src={redoIconUrl} alt="" draggable={false} />
         </button>
       </div>
 
@@ -318,7 +324,7 @@ const TimelinePlayer = ({
             onDeleteSelectedClip();
           }}
         >
-          <img src="/bin.png" alt="" draggable={false} />
+          <img src={binIconUrl} alt="" draggable={false} />
         </button>
 
         <button
@@ -338,7 +344,7 @@ const TimelinePlayer = ({
             onSplitSelectedClip();
           }}
         >
-          <img src="/split.png" alt="" draggable={false} />
+          <img src={splitIconUrl} alt="" draggable={false} />
         </button>
       </div>
 

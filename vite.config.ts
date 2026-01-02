@@ -18,6 +18,7 @@ export default defineConfig({
   },
   build: {
     copyPublicDir: false,
+    assetsInlineLimit: 0,
     lib: {
       entry: 'src/lib/index.ts',
       name: 'MeliesVideoEditor',
