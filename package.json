@@ -1,5 +1,5 @@
 {
-  "name": "Melies-video-editor",
+  "name": "melies-video-editor",
   "version": "0.1.0",
   "description": "A React video timeline editor GUI built on @xzdarcy/react-timeline-editor.",
   "type": "module",
