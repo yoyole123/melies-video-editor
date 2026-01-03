@@ -125,26 +125,22 @@ class AudioControl {
     let lastResyncAtMs = performance.now();
 
     const timeListener = ({ time }: { time: number }) => {
-      // While playing, avoid seeking every frame (it can cause silence/stuttering).
-      // Instead, occasionally re-sync if drift becomes noticeable.
+      // When the timeline time is explicitly set (e.g. user drags/clicks cursor), we want
+      // audio to jump immediately, even during playback.
+      //
+      // We still keep a light throttle for normal playback-driven updates to avoid
+      // over-seeking (which can cause stutters on some browsers).
+      const now = performance.now();
       if (!engine.isPlaying) {
         this.seekForEngineTime(howl, soundId, startTime, time, offsetSeconds);
         return;
       }
 
-      const now = performance.now();
-      if (now - lastResyncAtMs < 500) return;
+      // If time updates arrive frequently during playback, avoid seeking too often.
+      if (now - lastResyncAtMs < 120) return;
       lastResyncAtMs = now;
 
-      try {
-        const expected = Math.max(0, time - startTime + offsetSeconds);
-        const currentPos = Number(howl.seek(soundId));
-        if (Number.isFinite(currentPos) && Math.abs(currentPos - expected) > 0.25) {
-          this.seekForEngineTime(howl, soundId, startTime, time, offsetSeconds);
-        }
-      } catch {
-        // ignore
-      }
+      this.seekForEngineTime(howl, soundId, startTime, time, offsetSeconds);
     };
     const rateListener = ({ rate }: { rate: number }) => {
       howl.rate(rate, soundId);

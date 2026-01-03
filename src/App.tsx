@@ -996,20 +996,23 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = true }: MeliesVideo
         const pStart = Number((partnerAction as any).start);
         const pEnd = Number((partnerAction as any).end);
         if (Number.isFinite(pStart) && Number.isFinite(pEnd) && pStart === start && pEnd === end) {
+          const partnerOffsetRaw = Number((partnerAction as any)?.data?.offset);
+          const partnerOffset = Number.isFinite(partnerOffsetRaw) ? partnerOffsetRaw : currentOffset;
+          const partnerRightOffset = partnerOffset + (Number.isFinite(splitDelta) ? splitDelta : 0);
           const partnerRightId = `${String((partnerAction as any).id)}-r-${uid()}`;
           const partnerLeft: CustomTimelineAction = {
             ...partnerAction,
             start,
             end: cursorTime,
             id: (partnerAction as any).id,
-            data: { ...(partnerAction as any).data, linkId: leftLinkId ?? undefined },
+            data: { ...(partnerAction as any).data, offset: partnerOffset, linkId: leftLinkId ?? undefined },
           };
           const partnerRight: CustomTimelineAction = {
             ...partnerAction,
             start: cursorTime,
             end,
             id: partnerRightId,
-            data: { ...(partnerAction as any).data, linkId: rightLinkId ?? undefined },
+            data: { ...(partnerAction as any).data, offset: partnerRightOffset, linkId: rightLinkId ?? undefined },
           };
 
           const partnerRow = next[partnerRowIndex];

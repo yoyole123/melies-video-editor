@@ -118,12 +118,13 @@ export const mockEffect: Record<string, TimelineEffect> = {
         if (chosen) videoControl.setSource(chosen);
         videoControl.setActive(true);
         videoControl.setRate(engine.getPlayRate());
-        // Smooth preview: NEVER seek while playing (seeks cause buffering).
-        // When paused/scrubbing, we force seek to show the correct frame.
-        if (!isPlaying) {
-          const inPoint = Number(offset ?? 0);
-          videoControl.seek(Math.max(0, time - action.start + (Number.isFinite(inPoint) ? inPoint : 0)), { force: true });
-        }
+        const inPoint = Number(offset ?? 0);
+        const desired = Math.max(0, time - action.start + (Number.isFinite(inPoint) ? inPoint : 0));
+
+        // When paused/scrubbing, force seek for accurate frame preview.
+        // When playing, still allow seeks (throttled inside videoControl) so cursor jumps
+        // immediately reflect the new timecode.
+        videoControl.seek(desired, { force: !isPlaying });
       },
       leave: () => {
         videoControl.pause();
