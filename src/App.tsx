@@ -163,6 +163,12 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
   const pendingZoomScrollLeftRef = useRef<number | null>(null);
   const lastZoomPointerDownMsRef = useRef<number>(0);
 
+  // Lane label column width: old was ~22px; widen by ~15%.
+  const LANE_LABEL_WIDTH_PX = 30;
+  // Ensure the Timeline's left padding is at least as wide as our lane-label column,
+  // so the scale/ticks/cursor don't start underneath it.
+  const timelineStartLeft = Math.max(startLeft, LANE_LABEL_WIDTH_PX);
+
   // After zooming changes scaleWidth, apply the new scrollLeft once the Timeline has re-laid out.
   useLayoutEffect(() => {
     const pending = pendingZoomScrollLeftRef.current;
@@ -898,8 +904,8 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
 
     // Keep the visual center time stable while zooming.
     const centerPx = scrollLeft + viewportWidth / 2;
-    const centerTime = Math.max(0, ((centerPx - startLeft) * scale) / prevScaleWidth);
-    const nextCenterPx = startLeft + (centerTime * clamped) / scale;
+    const centerTime = Math.max(0, ((centerPx - timelineStartLeft) * scale) / prevScaleWidth);
+    const nextCenterPx = timelineStartLeft + (centerTime * clamped) / scale;
     const nextScrollLeft = Math.max(0, nextCenterPx - viewportWidth / 2);
 
     pendingZoomScrollLeftRef.current = nextScrollLeft;
@@ -918,14 +924,14 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
     const rect = (editArea ?? root).getBoundingClientRect();
     const position = clientX - rect.x;
     const left = position + getTimelineScrollLeft();
-    const time = ((left - startLeft) * scale) / timelineScaleWidth;
+    const time = ((left - timelineStartLeft) * scale) / timelineScaleWidth;
     return Math.max(0, time);
   };
 
   const timeToPixel = (t: number) => {
     const time = Number(t);
     if (!Number.isFinite(time)) return 0;
-    return startLeft + (time * timelineScaleWidth) / scale;
+    return timelineStartLeft + (time * timelineScaleWidth) / scale;
   };
 
   const computeBumpedStart = (
@@ -1903,7 +1909,7 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
           <Timeline
             scale={scale}
             scaleWidth={timelineScaleWidth}
-            startLeft={startLeft}
+            startLeft={timelineStartLeft}
             rowHeight={ROW_HEIGHT_PX}
             autoScroll={true}
             ref={timelineState}
