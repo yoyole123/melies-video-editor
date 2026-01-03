@@ -3,7 +3,7 @@ import type { TimelineState } from '@xzdarcy/react-timeline-editor';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CustomRender0, CustomRender1, CustomRender2 } from './custom';
 import './index.less';
-import { mockData, mockEffect, scale, scaleWidth, startLeft } from './mock';
+import { mockEffect, scale, scaleWidth, startLeft } from './mock';
 import type { CustomTimelineAction, CusTomTimelineRow } from './mock';
 import type { FootageItem } from './footageBin';
 import TimelinePlayer from './player';
@@ -25,7 +25,12 @@ import {
   type DragStartEvent,
 } from '@dnd-kit/core';
 
-const defaultEditorData = structuredClone(mockData);
+const createEmptyEditorData = (): CusTomTimelineRow[] => [
+  { id: '0', actions: [] },
+  { id: '1', actions: [] },
+  { id: '2', actions: [] },
+  { id: '3', actions: [] },
+];
 
 const MAX_HISTORY = 5;
 
@@ -83,6 +88,14 @@ export type MeliesVideoEditorProps = {
    * When omitted or empty, the footage bin will be empty.
    */
   footageUrls?: string[];
+
+  /**
+   * When true, automatically place `footageUrls` onto the timeline on first initialization
+   * (one after another, starting at t=0).
+   *
+   * Defaults to false.
+   */
+  autoPlaceFootage?: boolean;
 };
 
 const inferFootageKindFromUrl = (url: string): FootageItem['kind'] => {
@@ -101,8 +114,8 @@ const nameFromUrl = (url: string, index: number) => {
   }
 };
 
-const MeliesVideoEditor = ({ footageUrls }: MeliesVideoEditorProps) => {
-  const [data, setData] = useState<CusTomTimelineRow[]>(defaultEditorData as CusTomTimelineRow[]);
+const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = true }: MeliesVideoEditorProps) => {
+  const [data, setData] = useState<CusTomTimelineRow[]>(() => createEmptyEditorData());
   const [selectedActionId, setSelectedActionId] = useState<string | null>(null);
   const [past, setPast] = useState<CusTomTimelineRow[][]>([]);
   const [future, setFuture] = useState<CusTomTimelineRow[][]>([]);
@@ -175,6 +188,79 @@ const MeliesVideoEditor = ({ footageUrls }: MeliesVideoEditorProps) => {
     // Keep video + its embedded audio together by pairing V1->A1 and V2->A2.
     return videoRowIndex === VIDEO_ROW_INDEXES[1] ? AUDIO_ROW_INDEXES[1] : AUDIO_ROW_INDEXES[0];
   };
+
+  const hasAutoPlacedFootageRef = useRef(false);
+
+  useEffect(() => {
+    if (!autoPlaceFootage) return;
+    if (hasAutoPlacedFootageRef.current) return;
+    if (footageBin.length === 0) return;
+
+    const rowsNow = dataRef.current;
+    const hasAnyActions = rowsNow.some((r) => Array.isArray(r?.actions) && r.actions.length > 0);
+    if (hasAnyActions) return;
+
+    const targetVideoRow = VIDEO_ROW_INDEXES[0];
+    const targetAudioRow = pairedAudioRowForVideoRow(targetVideoRow);
+
+    const next = createEmptyEditorData();
+    let t = 0;
+    for (const item of footageBin) {
+      const duration = Math.max(0.01, Number(item.defaultDuration ?? 10));
+      const start = t;
+      const end = t + duration;
+      t = end;
+
+      if (item.kind === 'video') {
+        const linkId = `link-${uid()}`;
+        next[targetVideoRow].actions.push({
+          id: `video-${uid()}`,
+          start,
+          end,
+          effectId: 'effect1',
+          data: {
+            src: item.src,
+            previewSrc: item.previewSrc,
+            name: item.name,
+            linkId,
+          },
+        } as CustomTimelineAction);
+
+        next[targetAudioRow].actions.push({
+          id: `video-audio-${uid()}`,
+          start,
+          end,
+          effectId: 'effect2',
+          data: {
+            src: item.src,
+            name: item.name,
+            linkId,
+          },
+        } as CustomTimelineAction);
+      } else {
+        next[targetAudioRow].actions.push({
+          id: `audio-${uid()}`,
+          start,
+          end,
+          effectId: 'effect0',
+          data: {
+            src: item.src,
+            name: item.name,
+          },
+        } as CustomTimelineAction);
+      }
+    }
+
+    setSelectedActionId(null);
+    setPast([]);
+    setFuture([]);
+    setData(() => {
+      dataRef.current = next;
+      return next;
+    });
+
+    hasAutoPlacedFootageRef.current = true;
+  }, [autoPlaceFootage, footageBin]);
 
   // Preload media referenced by timeline actions to reduce buffering/stalls during playback.
   // This is intentionally fire-and-forget; cache dedupes across edits.
