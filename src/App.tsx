@@ -3,7 +3,7 @@ import type { TimelineState } from '@xzdarcy/react-timeline-editor';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CustomRender0, CustomRender1, CustomRender2 } from './custom';
 import './index.less';
-import { mockEffect, scale, scaleWidth, startLeft } from './mock';
+import { mockEffect, scale, scaleWidth as baseScaleWidth, startLeft } from './mock';
 import type { CustomTimelineAction, CusTomTimelineRow } from './mock';
 import type { FootageItem } from './footageBin';
 import TimelinePlayer from './player';
@@ -11,6 +11,8 @@ import videoControl from './videoControl';
 import mediaCache from './mediaCache';
 import { useCoarsePointer } from './useCoarsePointer';
 import footageIconUrl from './assets/footage.png';
+import zoomInIconUrl from './assets/zoom-in.png';
+import zoomOutIconUrl from './assets/zoom-out.png';
 import {
   DndContext,
   DragOverlay,
@@ -154,6 +156,27 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
   const timelinePointerDownRef = useRef<{ x: number; y: number } | null>(null);
   const cursorDraggingRef = useRef<{ pointerId: number } | null>(null);
 
+  const [timelineScaleWidth, setTimelineScaleWidth] = useState(baseScaleWidth);
+  const MIN_SCALE_WIDTH = 80;
+  const MAX_SCALE_WIDTH = 480;
+  const ZOOM_FACTOR = 1.25;
+  const pendingZoomScrollLeftRef = useRef<number | null>(null);
+  const lastZoomPointerDownMsRef = useRef<number>(0);
+
+  // After zooming changes scaleWidth, apply the new scrollLeft once the Timeline has re-laid out.
+  useLayoutEffect(() => {
+    const pending = pendingZoomScrollLeftRef.current;
+    if (pending == null) return;
+    pendingZoomScrollLeftRef.current = null;
+
+    timelineState.current?.setScrollLeft(pending);
+
+    // Ensure our laneScrollLeft state matches the DOM scrollLeft the timeline actually ended up with.
+    requestAnimationFrame(() => {
+      setLaneScrollLeft(getTimelineScrollLeft());
+    });
+  }, [timelineScaleWidth]);
+
   const ROW_HEIGHT_PX = isMobile ? 48 : 32;
 
   // Lane layout (row indexes) used by this app.
@@ -192,6 +215,16 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
   const pairedAudioRowForVideoRow = (videoRowIndex: number) => {
     // Keep video + its embedded audio together by pairing V1->A1 and V2->A2.
     return videoRowIndex === VIDEO_ROW_INDEXES[1] ? AUDIO_ROW_INDEXES[1] : AUDIO_ROW_INDEXES[0];
+  };
+
+  const pairedVideoRowForAudioRow = (audioRowIndex: number) => {
+    // Inverse of pairedAudioRowForVideoRow.
+    return audioRowIndex === AUDIO_ROW_INDEXES[1] ? VIDEO_ROW_INDEXES[1] : VIDEO_ROW_INDEXES[0];
+  };
+
+  const normalizeRowIndexForKind = (rawRowIndex: number, kind: 'video' | 'audio') => {
+    const candidates = kind === 'video' ? VIDEO_ROW_INDEXES : AUDIO_ROW_INDEXES;
+    return pickNearestRowIndex(rawRowIndex, candidates) ?? candidates[0];
   };
 
   const hasAutoPlacedFootageRef = useRef(false);
@@ -330,6 +363,14 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
     // Used to convert pointer X deltas into time deltas.
     basePointerTime: number | null;
     lastPointerTime: number | null;
+    // Used to detect intentional vertical lane switches.
+    basePointerClientY: number | null;
+    lastPointerClientY: number | null;
+    initialRowIndex: number;
+    committedRowIndex: number;
+    laneCandidateRowIndex: number | null;
+    laneCandidateSinceMs: number;
+    laneIntentRowIndex: number | null;
     // Baseline clip range at the moment we "take over".
     initialStart: number;
     initialEnd: number;
@@ -341,6 +382,13 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
     dir: null,
     basePointerTime: null,
     lastPointerTime: null,
+    basePointerClientY: null,
+    lastPointerClientY: null,
+    initialRowIndex: 0,
+    committedRowIndex: 0,
+    laneCandidateRowIndex: null,
+    laneCandidateSinceMs: 0,
+    laneIntentRowIndex: null,
     initialStart: 0,
     initialEnd: 0,
     takeover: false,
@@ -437,6 +485,166 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
     actions.splice(partner.actionIndex, 1, updated as any);
     partnerRow.actions = actions as any;
     return next;
+  };
+
+  /**
+   * Reconcile lane placement for actions so:
+   * - video clips always live in a video lane (V1/V2)
+   * - audio clips always live in an audio lane (A1/A2)
+   * - linked pairs (video<->embedded audio) stay paired across lanes when either is moved
+   * - videoLayer is updated when a video clip moves between V lanes
+   */
+  const reconcileLanePlacement = (rows: CusTomTimelineRow[], sourceActionId: string | null) => {
+    const safeRows = structuredClone(rows) as CusTomTimelineRow[];
+    while (safeRows.length < 4) safeRows.push({ id: `${safeRows.length}`, actions: [] } as unknown as CusTomTimelineRow);
+
+    const asRecord = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {});
+    const getField = (obj: unknown, key: string) => {
+      if (!obj || typeof obj !== 'object') return undefined;
+      return (obj as Record<string, unknown>)[key];
+    };
+
+    const getActionId = (a: CustomTimelineAction) => String(getField(a as unknown, 'id') ?? '');
+    const getEffectId = (a: CustomTimelineAction) => String(getField(a as unknown, 'effectId') ?? '');
+    const getStart = (a: CustomTimelineAction) => Number(getField(a as unknown, 'start'));
+    const getEnd = (a: CustomTimelineAction) => Number(getField(a as unknown, 'end'));
+    const getData = (a: CustomTimelineAction) => getField(a as unknown, 'data');
+    const startOfUnknown = (a: unknown) => {
+      if (!a || typeof a !== 'object') return 0;
+      const n = Number((a as Record<string, unknown>).start);
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    type Found = { rowIndex: number; actionIndex: number; action: CustomTimelineAction };
+    const foundById = new Map<string, Found>();
+    const linkGroups = new Map<string, { video?: Found; audio?: Found }>();
+
+    for (let rowIndex = 0; rowIndex < safeRows.length; rowIndex++) {
+      const row = safeRows[rowIndex];
+      const actions = Array.isArray(row?.actions) ? row.actions : [];
+      for (let actionIndex = 0; actionIndex < actions.length; actionIndex++) {
+        const action = actions[actionIndex] as unknown as CustomTimelineAction;
+        const id = getActionId(action);
+        if (!id) continue;
+
+        foundById.set(id, { rowIndex, actionIndex, action });
+
+        const data = getData(action);
+        const linkIdRaw = getField(data, 'linkId');
+        const linkId = linkIdRaw != null ? String(linkIdRaw) : '';
+        if (!linkId) continue;
+
+        const group = linkGroups.get(linkId) ?? {};
+        const effectId = getEffectId(action);
+        if (effectId === 'effect1') group.video = { rowIndex, actionIndex, action };
+        else if (effectId === 'effect2') group.audio = { rowIndex, actionIndex, action };
+        linkGroups.set(linkId, group);
+      }
+    }
+
+    const instructions = new Map<
+      string,
+      {
+        targetRowIndex: number;
+        patchStartEnd?: { start: number; end: number };
+        patchVideoLayer?: number;
+      }
+    >();
+
+    // First reconcile linked pairs.
+    for (const group of linkGroups.values()) {
+      if (!group.video || !group.audio) continue;
+
+      const videoId = getActionId(group.video.action);
+      const audioId = getActionId(group.audio.action);
+      const basis: 'video' | 'audio' = sourceActionId && String(sourceActionId) === audioId ? 'audio' : 'video';
+
+      const vRow = basis === 'audio'
+        ? pairedVideoRowForAudioRow(normalizeRowIndexForKind(group.audio.rowIndex, 'audio'))
+        : normalizeRowIndexForKind(group.video.rowIndex, 'video');
+      const aRow = pairedAudioRowForVideoRow(vRow);
+
+      const basisAction = basis === 'audio' ? group.audio.action : group.video.action;
+      const nextStart = getStart(basisAction);
+      const nextEnd = getEnd(basisAction);
+      const validRange = Number.isFinite(nextStart) && Number.isFinite(nextEnd) && nextEnd > nextStart;
+
+      const layerForV = Math.max(0, VIDEO_ROW_INDEXES.findIndex((x) => x === vRow));
+
+      instructions.set(videoId, {
+        targetRowIndex: vRow,
+        patchStartEnd: validRange ? { start: nextStart, end: nextEnd } : undefined,
+        patchVideoLayer: layerForV,
+      });
+      instructions.set(audioId, {
+        targetRowIndex: aRow,
+        patchStartEnd: validRange ? { start: nextStart, end: nextEnd } : undefined,
+      });
+    }
+
+    // Then normalize any remaining actions to the relevant lane type.
+    for (const [id, found] of foundById.entries()) {
+      if (instructions.has(id)) continue;
+      const effectId = getEffectId(found.action);
+
+      if (effectId === 'effect1') {
+        const vRow = normalizeRowIndexForKind(found.rowIndex, 'video');
+        const layerForV = Math.max(0, VIDEO_ROW_INDEXES.findIndex((x) => x === vRow));
+        instructions.set(id, { targetRowIndex: vRow, patchVideoLayer: layerForV });
+      } else if (effectId === 'effect0' || effectId === 'effect2') {
+        const aRow = normalizeRowIndexForKind(found.rowIndex, 'audio');
+        instructions.set(id, { targetRowIndex: aRow });
+      }
+    }
+
+    // Rebuild rows based on instructions.
+    const rebuilt = safeRows.map((row) => ({ ...row, actions: [] as unknown as CusTomTimelineRow['actions'] } as CusTomTimelineRow));
+    let changed = false;
+
+    for (let rowIndex = 0; rowIndex < safeRows.length; rowIndex++) {
+      const row = safeRows[rowIndex];
+      const actions = Array.isArray(row?.actions) ? row.actions : [];
+      for (const rawAction of actions) {
+        const action = rawAction as unknown as CustomTimelineAction;
+        const id = getActionId(action);
+        if (!id) continue;
+
+        const inst = instructions.get(id);
+        const targetRowIndex = inst ? inst.targetRowIndex : rowIndex;
+        const target = rebuilt[targetRowIndex] ?? rebuilt[rowIndex];
+
+        let out: CustomTimelineAction = action;
+
+        if (inst?.patchStartEnd) {
+          const nextStart = inst.patchStartEnd.start;
+          const nextEnd = inst.patchStartEnd.end;
+          if (getStart(out) !== nextStart || getEnd(out) !== nextEnd) {
+            out = { ...asRecord(out), start: nextStart, end: nextEnd } as unknown as CustomTimelineAction;
+            changed = true;
+          }
+        }
+
+        if (inst?.patchVideoLayer != null && getEffectId(out) === 'effect1') {
+          const existing = Number(getField(getData(out), 'videoLayer'));
+          if (!Number.isFinite(existing) || existing !== inst.patchVideoLayer) {
+            const nextData = { ...asRecord(getData(out)), videoLayer: inst.patchVideoLayer };
+            out = { ...asRecord(out), data: nextData } as unknown as CustomTimelineAction;
+            changed = true;
+          }
+        }
+
+        if (targetRowIndex !== rowIndex) changed = true;
+        (target.actions as unknown as CustomTimelineAction[]).push(out);
+      }
+    }
+
+    for (const row of rebuilt) {
+      const actions = Array.isArray(row.actions) ? [...row.actions] : [];
+      actions.sort((a, b) => startOfUnknown(a) - startOfUnknown(b));
+      row.actions = actions as unknown as CusTomTimelineRow['actions'];
+    }
+
+    return changed ? rebuilt : rows;
   };
 
   const setStartEndForActionAndLinked = (rows: CusTomTimelineRow[], sourceActionId: string, nextStart: number, nextEnd: number) => {
@@ -666,6 +874,41 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
     return grid?.scrollLeft ?? 0;
   };
 
+  const getTimelineViewportWidth = () => {
+    const root = timelineWrapRef.current;
+    if (!root) return null;
+    const editArea = root.querySelector('.timeline-editor-edit-area') as HTMLElement | null;
+    const rect = (editArea ?? root).getBoundingClientRect();
+    const width = Number(rect?.width ?? 0);
+    return Number.isFinite(width) && width > 0 ? width : null;
+  };
+
+  const zoomToScaleWidth = (nextScaleWidth: number) => {
+    const clamped = Math.min(MAX_SCALE_WIDTH, Math.max(MIN_SCALE_WIDTH, Math.round(nextScaleWidth)));
+    if (clamped === timelineScaleWidth) return;
+
+    const viewportWidth = getTimelineViewportWidth();
+    if (!viewportWidth) {
+      setTimelineScaleWidth(clamped);
+      return;
+    }
+
+    const prevScaleWidth = timelineScaleWidth;
+    const scrollLeft = getTimelineScrollLeft();
+
+    // Keep the visual center time stable while zooming.
+    const centerPx = scrollLeft + viewportWidth / 2;
+    const centerTime = Math.max(0, ((centerPx - startLeft) * scale) / prevScaleWidth);
+    const nextCenterPx = startLeft + (centerTime * clamped) / scale;
+    const nextScrollLeft = Math.max(0, nextCenterPx - viewportWidth / 2);
+
+    pendingZoomScrollLeftRef.current = nextScrollLeft;
+    setTimelineScaleWidth(clamped);
+  };
+
+  const zoomIn = () => zoomToScaleWidth(timelineScaleWidth * ZOOM_FACTOR);
+  const zoomOut = () => zoomToScaleWidth(timelineScaleWidth / ZOOM_FACTOR);
+
   const getTimelineScrollTop = () => laneScrollTop;
 
   const timeFromClientX = (clientX: number) => {
@@ -675,14 +918,14 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
     const rect = (editArea ?? root).getBoundingClientRect();
     const position = clientX - rect.x;
     const left = position + getTimelineScrollLeft();
-    const time = ((left - startLeft) * scale) / scaleWidth;
+    const time = ((left - startLeft) * scale) / timelineScaleWidth;
     return Math.max(0, time);
   };
 
   const timeToPixel = (t: number) => {
     const time = Number(t);
     if (!Number.isFinite(time)) return 0;
-    return startLeft + (time * scaleWidth) / scale;
+    return startLeft + (time * timelineScaleWidth) / scale;
   };
 
   const computeBumpedStart = (
@@ -779,21 +1022,46 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
         g.basePointerTime = t;
       }
       g.lastPointerTime = t;
+
+      if (g.basePointerClientY == null) {
+        g.basePointerClientY = e.clientY;
+      }
+      g.lastPointerClientY = e.clientY;
     };
 
     const onPointerUpOrCancel = () => {
-      // If the lib misses an end callback, ensure we don't stay stuck in takeover mode.
-      gestureRef.current = {
-        actionId: null,
-        mode: null,
-        dir: null,
-        basePointerTime: null,
-        lastPointerTime: null,
-        initialStart: 0,
-        initialEnd: 0,
-        takeover: false,
+      // pointerup/cancel fires (capture) BEFORE the timeline library calls its end callbacks.
+      // If we reset immediately, we lose intent (e.g. lane switch target) before onActionMoveEnd.
+      // So we defer cleanup by a frame, and only apply it if the lib didn't.
+      const snapshot = {
+        actionId: gestureRef.current.actionId,
+        mode: gestureRef.current.mode,
       };
-      snapStateRef.current = { actionId: null, edge: null };
+
+      requestAnimationFrame(() => {
+        if (gestureRef.current.actionId !== snapshot.actionId) return;
+        if (gestureRef.current.mode !== snapshot.mode) return;
+
+        // If the lib misses an end callback, ensure we don't stay stuck in takeover mode.
+        gestureRef.current = {
+          actionId: null,
+          mode: null,
+          dir: null,
+          basePointerTime: null,
+          lastPointerTime: null,
+          basePointerClientY: null,
+          lastPointerClientY: null,
+          initialRowIndex: 0,
+          committedRowIndex: 0,
+          laneCandidateRowIndex: null,
+          laneCandidateSinceMs: 0,
+          laneIntentRowIndex: null,
+          initialStart: 0,
+          initialEnd: 0,
+          takeover: false,
+        };
+        snapStateRef.current = { actionId: null, edge: null };
+      });
     };
 
     window.addEventListener('pointermove', onPointerMove, { capture: true });
@@ -813,6 +1081,128 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
     const remove = (gestureRef.current as any)?._removePointerListeners as undefined | (() => void);
     remove?.();
     delete (gestureRef.current as any)._removePointerListeners;
+  };
+
+  const suppressNextTimelineOnChangeRef = useRef(false);
+
+  const [moveGhostPreview, setMoveGhostPreview] = useState<
+    | {
+        actionId: string;
+        laneRow: number;
+        start: number;
+        end: number;
+        duration: number;
+        kind: 'video' | 'audio';
+      }
+    | null
+  >(null);
+
+  const moveActionToLaneIfValid = (rows: CusTomTimelineRow[], actionId: string, desiredLaneRowIndex: number) => {
+    const current = findActionById(rows, actionId);
+    if (!current) return rows;
+
+    const effectId = String((current.action as unknown as { effectId?: unknown })?.effectId ?? '');
+    const kind: 'video' | 'audio' = effectId === 'effect1' ? 'video' : 'audio';
+    const targetMainRow = normalizeRowIndexForKind(desiredLaneRowIndex, kind);
+
+    const partner = findLinkedPartner(rows, actionId);
+    const isLinked = Boolean(partner);
+
+    const movingIds = new Set<string>([String(actionId)]);
+    if (partner) movingIds.add(String(partner.action.id));
+
+    const mainStart = Number((current.action as unknown as { start?: unknown })?.start);
+    const mainEnd = Number((current.action as unknown as { end?: unknown })?.end);
+    if (!Number.isFinite(mainStart) || !Number.isFinite(mainEnd) || mainEnd <= mainStart) return rows;
+
+    const canPlaceInRow = (row: CusTomTimelineRow | undefined, start: number, end: number) => {
+      const actions = Array.isArray(row?.actions) ? row!.actions : [];
+      for (const other of actions) {
+        const oid = String((other as unknown as { id?: unknown })?.id ?? '');
+        if (oid && movingIds.has(oid)) continue;
+        if (rangesOverlap(start, end, Number((other as any)?.start), Number((other as any)?.end))) return false;
+      }
+      return true;
+    };
+
+    let targetVideoRow: number | null = null;
+    let targetAudioRow: number | null = null;
+
+    if (isLinked) {
+      if (kind === 'video') {
+        targetVideoRow = targetMainRow;
+        targetAudioRow = pairedAudioRowForVideoRow(targetVideoRow);
+      } else {
+        targetAudioRow = targetMainRow;
+        targetVideoRow = pairedVideoRowForAudioRow(targetAudioRow);
+      }
+    }
+
+    // Validate no overlap in target rows.
+    if (kind === 'video') {
+      if (!canPlaceInRow(rows[targetMainRow], mainStart, mainEnd)) return rows;
+    } else {
+      if (!canPlaceInRow(rows[targetMainRow], mainStart, mainEnd)) return rows;
+    }
+    if (targetVideoRow != null && !canPlaceInRow(rows[targetVideoRow], mainStart, mainEnd)) return rows;
+    if (targetAudioRow != null && !canPlaceInRow(rows[targetAudioRow], mainStart, mainEnd)) return rows;
+
+    // If already in the right lane(s), no-op.
+    if (!isLinked && current.rowIndex === targetMainRow) return rows;
+    if (isLinked && kind === 'video' && current.rowIndex === targetVideoRow) {
+      // Still may need to move partner.
+      const partnerNow = partner ? findActionById(rows, String(partner.action.id)) : null;
+      if (partnerNow && partnerNow.rowIndex === targetAudioRow) return rows;
+    }
+    if (isLinked && kind === 'audio' && current.rowIndex === targetAudioRow) {
+      const partnerNow = partner ? findActionById(rows, String(partner.action.id)) : null;
+      if (partnerNow && partnerNow.rowIndex === targetVideoRow) return rows;
+    }
+
+    const next = structuredClone(rows) as CusTomTimelineRow[];
+    while (next.length < 4) next.push({ id: `${next.length}`, actions: [] } as unknown as CusTomTimelineRow);
+
+    const removeId = (row: CusTomTimelineRow, id: string) => {
+      const actions = Array.isArray(row.actions) ? row.actions : [];
+      row.actions = actions.filter((a) => String((a as any)?.id ?? '') !== id) as any;
+    };
+    const addAction = (rowIndex: number, action: CustomTimelineAction) => {
+      const row = next[rowIndex];
+      row.actions = [...(row.actions ?? []), action] as any;
+      (row.actions as any).sort((a: any, b: any) => Number(a.start) - Number(b.start));
+    };
+
+    // Move main
+    removeId(next[current.rowIndex], String(actionId));
+
+    let mainOut: CustomTimelineAction = current.action;
+    if (kind === 'video') {
+      const layerForV = Math.max(0, VIDEO_ROW_INDEXES.findIndex((x) => x === targetMainRow));
+      mainOut = {
+        ...(mainOut as any),
+        data: { ...((mainOut as any).data ?? {}), videoLayer: layerForV },
+      };
+    }
+    addAction(targetMainRow, mainOut);
+
+    // Move partner if linked
+    if (partner && targetVideoRow != null && targetAudioRow != null) {
+      const partnerFound = findActionById(rows, String(partner.action.id));
+      if (partnerFound) {
+        removeId(next[partnerFound.rowIndex], String(partner.action.id));
+        const partnerTargetRow = kind === 'video' ? targetAudioRow : targetVideoRow;
+
+        let partnerOut: CustomTimelineAction = partnerFound.action;
+        const partnerEffect = String((partnerOut as any)?.effectId ?? '');
+        if (partnerEffect === 'effect1') {
+          const layerForV = Math.max(0, VIDEO_ROW_INDEXES.findIndex((x) => x === partnerTargetRow));
+          partnerOut = { ...(partnerOut as any), data: { ...((partnerOut as any).data ?? {}), videoLayer: layerForV } };
+        }
+        addAction(partnerTargetRow, partnerOut);
+      }
+    }
+
+    return next;
   };
 
   /**
@@ -1400,7 +1790,7 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
           {ghostPreview ? (
             <div className="timeline-ghost-layer" style={{ top: editAreaOffsetTop, left: editAreaOffsetLeft }}>
               {(() => {
-                const pxPerSec = scaleWidth / scale;
+                const pxPerSec = timelineScaleWidth / scale;
                 const width = ghostPreview.duration * pxPerSec;
                 const left = timeToPixel(ghostPreview.start) - laneScrollLeft;
 
@@ -1428,9 +1818,91 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
             </div>
           ) : null}
 
+          {moveGhostPreview ? (
+            <div className="timeline-ghost-layer" style={{ top: editAreaOffsetTop, left: editAreaOffsetLeft }}>
+              {(() => {
+                const pxPerSec = timelineScaleWidth / scale;
+                const width = moveGhostPreview.duration * pxPerSec;
+                const left = timeToPixel(moveGhostPreview.start) - laneScrollLeft;
+
+                const clips: Array<{ row: number; kind: 'video' | 'audio' }> = [];
+                if (moveGhostPreview.kind === 'video') {
+                  clips.push({ row: moveGhostPreview.laneRow, kind: 'video' });
+                  clips.push({ row: pairedAudioRowForVideoRow(moveGhostPreview.laneRow), kind: 'audio' });
+                } else {
+                  clips.push({ row: moveGhostPreview.laneRow, kind: 'audio' });
+                }
+
+                return clips.map((c) => (
+                  <div
+                    key={`${moveGhostPreview.actionId}-${c.kind}-${c.row}`}
+                    className={`timeline-ghost-clip${c.kind === 'video' ? ' is-video' : ' is-audio'}`}
+                    style={{
+                      left,
+                      top: c.row * ROW_HEIGHT_PX - laneScrollTop,
+                      width,
+                      height: ROW_HEIGHT_PX,
+                    }}
+                  />
+                ));
+              })()}
+            </div>
+          ) : null}
+
+          <div
+            className="timeline-zoom-controls"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="timeline-zoom-control"
+              onPointerDown={(e) => {
+                if (timelineScaleWidth >= MAX_SCALE_WIDTH) return;
+                lastZoomPointerDownMsRef.current =
+                  typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+                e.preventDefault();
+                e.stopPropagation();
+                zoomIn();
+              }}
+              onClick={() => {
+                const now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+                if (now - lastZoomPointerDownMsRef.current < 350) return;
+                zoomIn();
+              }}
+              aria-label="Zoom in"
+              title="Zoom in"
+              disabled={timelineScaleWidth >= MAX_SCALE_WIDTH}
+            >
+              <img src={zoomInIconUrl} alt="Zoom in" draggable={false} />
+            </button>
+            <button
+              type="button"
+              className="timeline-zoom-control"
+              onPointerDown={(e) => {
+                if (timelineScaleWidth <= MIN_SCALE_WIDTH) return;
+                lastZoomPointerDownMsRef.current =
+                  typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+                e.preventDefault();
+                e.stopPropagation();
+                zoomOut();
+              }}
+              onClick={() => {
+                const now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+                if (now - lastZoomPointerDownMsRef.current < 350) return;
+                zoomOut();
+              }}
+              aria-label="Zoom out"
+              title="Zoom out"
+              disabled={timelineScaleWidth <= MIN_SCALE_WIDTH}
+            >
+              <img src={zoomOutIconUrl} alt="Zoom out" draggable={false} />
+            </button>
+          </div>
+
           <Timeline
             scale={scale}
-            scaleWidth={scaleWidth}
+            scaleWidth={timelineScaleWidth}
             startLeft={startLeft}
             rowHeight={ROW_HEIGHT_PX}
             autoScroll={true}
@@ -1464,23 +1936,52 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
 
               const start = Number((action as any)?.start);
               const end = Number((action as any)?.end);
+
+              const actionId = String((action as any)?.id ?? '');
+              const found = actionId ? findActionById(dataRef.current, actionId) : null;
+              const initialRowIndex = found ? found.rowIndex : 0;
+
               gestureRef.current = {
-                actionId: String((action as any)?.id ?? ''),
+                actionId,
                 mode: 'move',
                 dir: null,
                 basePointerTime: null,
                 lastPointerTime: null,
+                basePointerClientY: null,
+                lastPointerClientY: null,
+                initialRowIndex,
+                committedRowIndex: initialRowIndex,
+                laneCandidateRowIndex: null,
+                laneCandidateSinceMs: 0,
+                laneIntentRowIndex: null,
                 initialStart: Number.isFinite(start) ? start : 0,
                 initialEnd: Number.isFinite(end) ? end : 0,
-                takeover: false,
+                takeover: true,
               };
               attachGesturePointerTracking();
+
+              setMoveGhostPreview(null);
 
               if (pendingHistoryBeforeRef.current) return;
               pendingHistoryBeforeRef.current = structuredClone(data) as CusTomTimelineRow[];
               pendingHistorySignatureRef.current = getTimelineSignature(data);
             }}
             onActionMoveEnd={() => {
+              const g = gestureRef.current;
+              const actionId = String(g.actionId ?? '');
+              const intentRow = g.laneIntentRowIndex;
+
+              if (actionId && intentRow != null) {
+                suppressNextTimelineOnChangeRef.current = true;
+                setData((prev) => {
+                  const moved = moveActionToLaneIfValid(prev, actionId, intentRow);
+                  dataRef.current = moved;
+                  return moved;
+                });
+              }
+
+              setMoveGhostPreview(null);
+
               const pendingBefore = pendingHistoryBeforeRef.current;
               const pendingSig = pendingHistorySignatureRef.current;
               if (pendingBefore && pendingSig) {
@@ -1498,6 +1999,13 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
                 dir: null,
                 basePointerTime: null,
                 lastPointerTime: null,
+                basePointerClientY: null,
+                lastPointerClientY: null,
+                initialRowIndex: 0,
+                committedRowIndex: 0,
+                laneCandidateRowIndex: null,
+                laneCandidateSinceMs: 0,
+                laneIntentRowIndex: null,
                 initialStart: 0,
                 initialEnd: 0,
                 takeover: false,
@@ -1510,12 +2018,24 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
 
               const start = Number((action as any)?.start);
               const end = Number((action as any)?.end);
+
+              const actionId = String((action as any)?.id ?? '');
+              const found = actionId ? findActionById(dataRef.current, actionId) : null;
+              const initialRowIndex = found ? found.rowIndex : 0;
+
               gestureRef.current = {
-                actionId: String((action as any)?.id ?? ''),
+                actionId,
                 mode: 'resize',
                 dir: null,
                 basePointerTime: null,
                 lastPointerTime: null,
+                basePointerClientY: null,
+                lastPointerClientY: null,
+                initialRowIndex,
+                committedRowIndex: initialRowIndex,
+                laneCandidateRowIndex: null,
+                laneCandidateSinceMs: 0,
+                laneIntentRowIndex: null,
                 initialStart: Number.isFinite(start) ? start : 0,
                 initialEnd: Number.isFinite(end) ? end : 0,
                 takeover: false,
@@ -1544,6 +2064,13 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
                 dir: null,
                 basePointerTime: null,
                 lastPointerTime: null,
+                basePointerClientY: null,
+                lastPointerClientY: null,
+                initialRowIndex: 0,
+                committedRowIndex: 0,
+                laneCandidateRowIndex: null,
+                laneCandidateSinceMs: 0,
+                laneIntentRowIndex: null,
                 initialStart: 0,
                 initialEnd: 0,
                 takeover: false,
@@ -1554,8 +2081,17 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
             const actionId = String((action as any)?.id ?? '');
             const g = gestureRef.current;
 
+            const getRowIndexForRow = (r: CusTomTimelineRow) => {
+              const id = String((r as unknown as { id?: unknown })?.id ?? '');
+              if (!id) return -1;
+              return dataRef.current.findIndex((x) => String((x as unknown as { id?: unknown })?.id ?? '') === id);
+            };
+
             // If we are in takeover mode for this gesture, drive movement from pointer tracking.
             if (g.takeover && g.mode === 'move' && g.actionId === actionId) {
+              const LANE_SWITCH_HOLD_MS = 160;
+              const LANE_SWITCH_MIN_Y_PX = Math.max(10, ROW_HEIGHT_PX * 0.45);
+
               const base = g.basePointerTime;
               const last = g.lastPointerTime;
               const delta = base != null && last != null ? last - base : 0;
@@ -1565,13 +2101,61 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
               const nextStart = snapped.start;
               const nextEnd = snapped.end;
 
-              const typedRow = row as CusTomTimelineRow;
-              if (wouldOverlapInRow(typedRow, String(action.id), nextStart, nextEnd)) return false;
+              // Determine candidate lane based on pointer Y.
+              const effectId = String((action as unknown as { effectId?: unknown })?.effectId ?? '');
+              const kind: 'video' | 'audio' = effectId === 'effect1' ? 'video' : 'audio';
 
+              const pointerY = g.lastPointerClientY;
+              const rawRow = pointerY != null ? rowIndexFromClientY(pointerY) : null;
+              const desiredLaneRow = normalizeRowIndexForKind(
+                rawRow != null ? rawRow : g.committedRowIndex,
+                kind
+              );
+
+              const baseY = g.basePointerClientY;
+              const yDelta = baseY != null && pointerY != null ? Math.abs(pointerY - baseY) : 0;
+              const now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+
+              if (desiredLaneRow !== g.committedRowIndex && yDelta >= LANE_SWITCH_MIN_Y_PX) {
+                if (g.laneCandidateRowIndex !== desiredLaneRow) {
+                  g.laneCandidateRowIndex = desiredLaneRow;
+                  g.laneCandidateSinceMs = now;
+                }
+                if (now - g.laneCandidateSinceMs >= LANE_SWITCH_HOLD_MS) {
+                  g.laneIntentRowIndex = desiredLaneRow;
+                }
+              } else {
+                g.laneCandidateRowIndex = null;
+                g.laneCandidateSinceMs = 0;
+                g.laneIntentRowIndex = null;
+              }
+
+              // Show ghost preview when the pointer is clearly in a different lane.
+              const previewRow = desiredLaneRow !== g.committedRowIndex && yDelta >= LANE_SWITCH_MIN_Y_PX ? desiredLaneRow : null;
+              if (previewRow != null) {
+                setMoveGhostPreview({
+                  actionId,
+                  laneRow: previewRow,
+                  start: nextStart,
+                  end: nextEnd,
+                  duration: Math.max(0.01, nextEnd - nextStart),
+                  kind,
+                });
+              } else {
+                setMoveGhostPreview(null);
+              }
+
+              // Overlap checks against the CURRENT committed lanes (we don't actually move lanes until drag end).
               const currentRows = dataRef.current;
+              const mainRow = currentRows[g.committedRowIndex];
+              if (mainRow && wouldOverlapInRow(mainRow, String(action.id), nextStart, nextEnd)) return false;
+
               const partner = findLinkedPartner(currentRows, String(action.id));
               if (partner) {
-                const partnerRow = currentRows[partner.rowIndex];
+                const partnerTargetRowIndex = kind === 'video'
+                  ? pairedAudioRowForVideoRow(normalizeRowIndexForKind(g.committedRowIndex, 'video'))
+                  : pairedVideoRowForAudioRow(normalizeRowIndexForKind(g.committedRowIndex, 'audio'));
+                const partnerRow = currentRows[partnerTargetRowIndex];
                 if (partnerRow && wouldOverlapInRow(partnerRow, String(partner.action.id), nextStart, nextEnd)) return false;
               }
 
@@ -1605,7 +2189,19 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
             const currentRows = dataRef.current;
             const partner = findLinkedPartner(currentRows, String(action.id));
             if (partner) {
-              const partnerRow = currentRows[partner.rowIndex];
+              const effectId = String((action as unknown as { effectId?: unknown })?.effectId ?? '');
+              const typedRowIndex = getRowIndexForRow(typedRow);
+              let partnerTargetRowIndex = partner.rowIndex;
+              if (typedRowIndex >= 0) {
+                if (effectId === 'effect1') {
+                  const vRow = normalizeRowIndexForKind(typedRowIndex, 'video');
+                  partnerTargetRowIndex = pairedAudioRowForVideoRow(vRow);
+                } else {
+                  const aRow = normalizeRowIndexForKind(typedRowIndex, 'audio');
+                  partnerTargetRowIndex = pairedVideoRowForAudioRow(aRow);
+                }
+              }
+              const partnerRow = currentRows[partnerTargetRowIndex];
               if (partnerRow && wouldOverlapInRow(partnerRow, String(partner.action.id), nextStart, nextEnd)) return false;
             }
 
@@ -1628,6 +2224,7 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
               // Take over for the rest of this drag gesture so we can also detect "pull away" and release.
               const base = gestureRef.current.lastPointerTime;
               gestureRef.current = {
+                ...gestureRef.current,
                 actionId,
                 mode: 'move',
                 dir: null,
@@ -1665,6 +2262,7 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
               const currentRows = dataRef.current;
               const partner = findLinkedPartner(currentRows, String(action.id));
               if (partner) {
+                // Resizing doesn't change rows, so use the partner's current row.
                 const partnerRow = currentRows[partner.rowIndex];
                 if (partnerRow && wouldOverlapInRow(partnerRow, String(partner.action.id), nextStart, nextEnd)) return false;
               }
@@ -1714,6 +2312,7 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
             if (snapped.snapped) {
               const base = gestureRef.current.lastPointerTime;
               gestureRef.current = {
+                ...gestureRef.current,
                 actionId,
                 mode: 'resize',
                 dir: resizeDir,
@@ -1728,16 +2327,21 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
             }
           }}
             onChange={(data) => {
+              if (suppressNextTimelineOnChangeRef.current) {
+                suppressNextTimelineOnChangeRef.current = false;
+                return;
+              }
               const nextClean = cleanEditorData(data as CusTomTimelineRow[]);
               const sourceActionId = pendingGestureActionIdRef.current;
               const nextLinked = sourceActionId ? applyLinkedStartEnd(nextClean, sourceActionId) : nextClean;
-              setData(nextLinked);
+              const nextReconciled = reconcileLanePlacement(nextLinked, sourceActionId);
+              setData(nextReconciled);
 
               // If this onChange is the result of a drag/resize gesture, record a single history entry.
               const pendingBefore = pendingHistoryBeforeRef.current;
               const pendingSig = pendingHistorySignatureRef.current;
               if (pendingBefore && pendingSig) {
-                const nextSig = getTimelineSignature(nextLinked);
+                const nextSig = getTimelineSignature(nextReconciled);
                 if (nextSig !== pendingSig) pushHistory(pendingBefore);
                 pendingHistoryBeforeRef.current = null;
                 pendingHistorySignatureRef.current = null;

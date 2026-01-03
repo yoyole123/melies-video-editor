@@ -57,8 +57,8 @@ body {
 }
 
 .dev-host__sidebar {
-  width: 280px;
-  max-width: 40vw;
+  width: 200px;
+  max-width: 24vw;
   padding: 12px;
   overflow: auto;
 }

@@ -281,6 +281,56 @@
     position: relative;
   }
 
+  .timeline-zoom-controls {
+    position: absolute;
+    left: 6px;
+    top: 6px;
+    z-index: 6;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    pointer-events: auto;
+  }
+
+  .timeline-zoom-control {
+    width: 18px;
+    height: 18px;
+    border-radius: 3px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background-color: #666;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition: transform 80ms ease, background-color 80ms ease, opacity 80ms ease;
+
+    img {
+      width: 12px;
+      height: 12px;
+      display: block;
+      user-select: none;
+      -webkit-user-select: none;
+      pointer-events: none;
+    }
+
+    &:hover:not(:disabled) {
+      background-color: #777;
+    }
+
+    &:active:not(:disabled) {
+      background-color: #777;
+      transform: scale(0.94);
+    }
+
+    &:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+  }
+
   // Cursor: improve touch hit target on mobile.
   .timeline-editor-cursor,
   .timeline-editor-cursor-area {
