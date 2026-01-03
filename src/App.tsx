@@ -1734,15 +1734,33 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
       <div className="timeline-editor-engine">
         <div className="player-stack">
           <div className="footage-ribbon" role="toolbar" aria-label="Footage">
-            <button
-              type="button"
-              className={`footage-ribbon-toggle${isFootageBinOpen ? ' is-open' : ''}`}
-              aria-expanded={isFootageBinOpen}
-              aria-controls="footage-bin-panel"
-              onClick={() => setIsFootageBinOpen((v) => !v)}
-            >
-              <img src={footageIconUrl} alt="Footage" draggable={false} />
-            </button>
+            <div className="footage-ribbon-left">
+              <div className="footage-toggle-stack">
+                <button
+                  type="button"
+                  className={`footage-ribbon-toggle${isFootageBinOpen ? ' is-open' : ''}`}
+                  aria-expanded={isFootageBinOpen}
+                  aria-controls="footage-bin-panel"
+                  onClick={() => setIsFootageBinOpen((v) => !v)}
+                >
+                  <img src={footageIconUrl} alt="Footage" draggable={false} />
+                </button>
+
+                <button
+                  type="button"
+                  className={`footage-edge-handle${isFootageBinOpen ? ' is-open' : ''}`}
+                  aria-label={isFootageBinOpen ? 'Close footage bin' : 'Open footage bin'}
+                  aria-expanded={isFootageBinOpen}
+                  aria-controls="footage-bin-panel"
+                  onClick={() => setIsFootageBinOpen((v) => !v)}
+                >
+                  {/* <span className="footage-edge-puller" aria-hidden="true" /> */}
+                  <span className="footage-edge-chevron" aria-hidden="true" />
+                </button>
+              </div>
+
+              <div className="footage-ribbon-title">Footage</div>
+            </div>
           </div>
 
           <div
