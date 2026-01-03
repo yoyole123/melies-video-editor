@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';
 import App from './App.tsx';
+import HostApp from './dev/HostApp';
 
 const getDevFootageUrls = () => {
   // Dev-only convenience: load everything in public/footage into the footage bin.
@@ -20,8 +21,17 @@ const getDevFootageUrls = () => {
 
 const devFootageUrls = getDevFootageUrls();
 
+const shouldUseDevHostApp = () => {
+  if (!import.meta.env.DEV) return false;
+
+  const value = String(import.meta.env.VITE_DEV_HOST_APP ?? '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+};
+
+const Root = shouldUseDevHostApp() ? HostApp : App;
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App footageUrls={devFootageUrls} />
+    <Root footageUrls={devFootageUrls} />
   </StrictMode>
 );

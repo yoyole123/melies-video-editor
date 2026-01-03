@@ -12,6 +12,22 @@ This project is not affiliated with the upstream author.
 
 - Start the UI (demo app): `pnpm dev`
 
+### Dev host wrapper (simulate embedding)
+
+By default, `pnpm dev` runs the standalone editor view.
+
+To run the dev host wrapper app (header/sidebar + editor), set:
+
+- `VITE_DEV_HOST_APP=1`
+
+Example (PowerShell):
+
+- `$env:VITE_DEV_HOST_APP = "1"; pnpm dev`
+
+Or create a `.env.local` file in the repo root:
+
+- `VITE_DEV_HOST_APP=1`
+
 ## Build (library)
 
 - Build the npm package output into `dist/`: `pnpm build`

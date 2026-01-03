@@ -24,10 +24,70 @@ a:hover {
 
 body {
   margin: 0;
-  display: flex;
-  place-items: center;
+  display: block;
   min-width: 320px;
   min-height: 100vh;
+}
+
+#root {
+  height: 100vh;
+}
+
+.dev-host {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.dev-host__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+}
+
+.dev-host__title {
+  font-weight: 600;
+}
+
+.dev-host__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.dev-host__sidebar {
+  width: 280px;
+  max-width: 40vw;
+  padding: 12px;
+  overflow: auto;
+}
+
+.dev-host__sidebarSection {
+  margin-bottom: 12px;
+}
+
+.dev-host__sidebarLabel {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.dev-host__sidebarHelp {
+  opacity: 0.8;
+  font-size: 0.9em;
+}
+
+.dev-host__textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.dev-host__main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 h1 {
