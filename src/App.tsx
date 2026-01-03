@@ -157,7 +157,7 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
   const cursorDraggingRef = useRef<{ pointerId: number } | null>(null);
 
   const [timelineScaleWidth, setTimelineScaleWidth] = useState(baseScaleWidth);
-  const MIN_SCALE_WIDTH = 80;
+  const MIN_SCALE_WIDTH = 40;
   const MAX_SCALE_WIDTH = 480;
   const ZOOM_FACTOR = 1.25;
   const pendingZoomScrollLeftRef = useRef<number | null>(null);
@@ -1956,7 +1956,7 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
                 laneIntentRowIndex: null,
                 initialStart: Number.isFinite(start) ? start : 0,
                 initialEnd: Number.isFinite(end) ? end : 0,
-                takeover: true,
+                takeover: false,
               };
               attachGesturePointerTracking();
 
@@ -2182,6 +2182,51 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
             if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd)) return false;
             if (nextEnd <= nextStart) return false;
 
+            // Lane-switch intent + ghost preview (works even when the lib drives horizontal dragging).
+            if (g.mode === 'move' && g.actionId === actionId) {
+              const LANE_SWITCH_HOLD_MS = 160;
+              const LANE_SWITCH_MIN_Y_PX = Math.max(10, ROW_HEIGHT_PX * 0.45);
+
+              const effectId = String((action as unknown as { effectId?: unknown })?.effectId ?? '');
+              const kind: 'video' | 'audio' = effectId === 'effect1' ? 'video' : 'audio';
+
+              const pointerY = g.lastPointerClientY;
+              const rawRow = pointerY != null ? rowIndexFromClientY(pointerY) : null;
+              const desiredLaneRow = normalizeRowIndexForKind(rawRow != null ? rawRow : g.committedRowIndex, kind);
+
+              const baseY = g.basePointerClientY;
+              const yDelta = baseY != null && pointerY != null ? Math.abs(pointerY - baseY) : 0;
+              const now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+
+              if (desiredLaneRow !== g.committedRowIndex && yDelta >= LANE_SWITCH_MIN_Y_PX) {
+                if (g.laneCandidateRowIndex !== desiredLaneRow) {
+                  g.laneCandidateRowIndex = desiredLaneRow;
+                  g.laneCandidateSinceMs = now;
+                }
+                if (now - g.laneCandidateSinceMs >= LANE_SWITCH_HOLD_MS) {
+                  g.laneIntentRowIndex = desiredLaneRow;
+                }
+              } else {
+                g.laneCandidateRowIndex = null;
+                g.laneCandidateSinceMs = 0;
+                g.laneIntentRowIndex = null;
+              }
+
+              const previewRow = desiredLaneRow !== g.committedRowIndex && yDelta >= LANE_SWITCH_MIN_Y_PX ? desiredLaneRow : null;
+              if (previewRow != null) {
+                setMoveGhostPreview({
+                  actionId,
+                  laneRow: previewRow,
+                  start: nextStart,
+                  end: nextEnd,
+                  duration: Math.max(0.01, nextEnd - nextStart),
+                  kind,
+                });
+              } else {
+                setMoveGhostPreview(null);
+              }
+            }
+
             const typedRow = row as CusTomTimelineRow;
             if (wouldOverlapInRow(typedRow, String(action.id), nextStart, nextEnd)) return false;
 
@@ -2205,10 +2250,9 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
               if (partnerRow && wouldOverlapInRow(partnerRow, String(partner.action.id), nextStart, nextEnd)) return false;
             }
 
-            // Live visual sync:
-            // - If linked: update both.
-            // - If snapped (even if not linked): force the dragged clip to the snapped range.
-            if (partner || snapped.snapped) {
+            // IMPORTANT: when snapped, prevent the timeline lib from applying its own drag position.
+            // This makes the actively-dragged clip stick visually to the cursor magnet.
+            if (snapped.snapped) {
               setData((prev) => {
                 const updated = partner
                   ? setStartEndForActionAndLinked(prev, String(action.id), nextStart, nextEnd)
@@ -2216,11 +2260,7 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
                 dataRef.current = updated;
                 return updated;
               });
-            }
 
-            // IMPORTANT: when snapped, prevent the timeline lib from applying its own drag position.
-            // This makes the actively-dragged clip stick visually to the cursor magnet.
-            if (snapped.snapped) {
               // Take over for the rest of this drag gesture so we can also detect "pull away" and release.
               const base = gestureRef.current.lastPointerTime;
               gestureRef.current = {
@@ -2237,6 +2277,19 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
               attachGesturePointerTracking();
               return false;
             }
+
+            // If the dragged action has a linked partner, keep the partner visually in sync during the drag.
+            // We intentionally DO NOT update the dragged action here, so the timeline library can keep
+            // it "glued" to the pointer for maximum responsiveness.
+            if (partner) {
+              setData((prev) => {
+                const updated = setStartEndForActionOnly(prev, String(partner.action.id), nextStart, nextEnd);
+                dataRef.current = updated;
+                return updated;
+              });
+            }
+
+            // When not snapped, let the library drive the drag for best responsiveness.
           }}
             onActionResizing={({ action, row, start, end, dir }) => {
             const actionId = String((action as any)?.id ?? '');
