@@ -1,7 +1,6 @@
 import type { TimelineState } from '@xzdarcy/react-timeline-editor';
 import { Button, Select } from 'antd';
 import { useEffect, useRef, useState } from 'react';
-import { scale, scaleWidth, startLeft } from './mock';
 import audioControl from './audioControl';
 import videoControl from './videoControl';
 import playButtonUrl from './assets/play-button.png';
@@ -17,6 +16,9 @@ export const Rates = [0.2, 0.5, 1.0, 1.5, 2.0];
 const TimelinePlayer = ({
   timelineState,
   autoScrollWhenPlay,
+  scale,
+  scaleWidth,
+  startLeft,
   editorData,
   selectedActionId,
   onDeleteSelectedClip,
@@ -28,6 +30,9 @@ const TimelinePlayer = ({
 }: {
   timelineState: React.MutableRefObject<TimelineState | null>;
   autoScrollWhenPlay: React.MutableRefObject<boolean>;
+  scale: number;
+  scaleWidth: number;
+  startLeft: number;
   editorData: any[];
   selectedActionId: string | null;
   onDeleteSelectedClip: () => void;
