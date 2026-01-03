@@ -7,6 +7,23 @@ class VideoControl {
   private lastSeekAtMs = 0;
   private lastRate: number | null = null;
 
+  private videoClaims: Record<
+    string,
+    {
+      actionId: string;
+      layer: number;
+      src: string;
+      actionStart: number;
+      offset: number;
+      engine: TimelineEngine;
+      isPlaying: boolean;
+      time: number;
+      claimedAtMs: number;
+    }
+  > = {};
+  private activeVideoActionId: string | null = null;
+  private lastEngineTime: number = 0;
+
   private boundEngine: TimelineEngine | null = null;
   private boundActionStart = 0;
   private vfcHandle: number | null = null;
@@ -20,6 +37,11 @@ class VideoControl {
     this.lastRate = null;
     this.unbindEngine();
 
+    // Clear any overlapping-video arbitration state.
+    this.videoClaims = {};
+    this.activeVideoActionId = null;
+    this.lastEngineTime = 0;
+
     // Default to inactive (black) until a video action becomes active.
     this.setActive(false);
   }
@@ -28,6 +50,118 @@ class VideoControl {
     if (!this.videoEl) return;
     // Show black when inactive by hiding the video element.
     this.videoEl.style.opacity = active ? '1' : '0';
+  }
+
+  claimVideo(data: {
+    actionId: string;
+    layer: number;
+    src: string;
+    engine: TimelineEngine;
+    isPlaying: boolean;
+    time: number;
+    actionStart: number;
+    offset?: number;
+  }) {
+    const actionId = String(data.actionId);
+    const layer = Number.isFinite(Number(data.layer)) ? Number(data.layer) : 0;
+    const src = String(data.src ?? '');
+    const actionStart = Number(data.actionStart);
+    const time = Number(data.time);
+    const engine = data.engine;
+    const isPlaying = Boolean(data.isPlaying);
+    const rawOffset = Number(data.offset ?? 0);
+    const offset = Number.isFinite(rawOffset) ? rawOffset : 0;
+
+    if (!src) return;
+    if (!Number.isFinite(actionStart) || !Number.isFinite(time)) return;
+
+    const now = performance.now();
+    this.lastEngineTime = time;
+    this.videoClaims[actionId] = {
+      actionId,
+      layer,
+      src,
+      actionStart,
+      offset,
+      engine,
+      isPlaying,
+      time,
+      claimedAtMs: now,
+    };
+
+    // Pick winner: highest layer wins (V2 over V1). Tie-breaker: most recently claimed.
+    let winner: (typeof this.videoClaims)[string] | null = null;
+    for (const claim of Object.values(this.videoClaims)) {
+      if (!winner) {
+        winner = claim;
+        continue;
+      }
+      if (claim.layer > winner.layer) {
+        winner = claim;
+        continue;
+      }
+      if (claim.layer === winner.layer && claim.claimedAtMs > winner.claimedAtMs) {
+        winner = claim;
+      }
+    }
+    if (!winner) return;
+
+    // Apply winner to the actual <video>.
+    this.activeVideoActionId = winner.actionId;
+    this.setActive(true);
+    this.setRate(winner.engine.getPlayRate());
+    this.setSource(winner.src);
+    const desired = Math.max(0, winner.time - winner.actionStart + winner.offset);
+    this.seek(desired, { force: !winner.isPlaying });
+    if (winner.isPlaying) {
+      void this.play();
+    } else {
+      this.pause();
+    }
+  }
+
+  releaseVideo(actionIdRaw: string) {
+    const actionId = String(actionIdRaw);
+    delete this.videoClaims[actionId];
+
+    // If the leaving clip wasn't the active one, no-op.
+    if (this.activeVideoActionId && this.activeVideoActionId !== actionId) return;
+
+    // Recompute winner.
+    let winner: (typeof this.videoClaims)[string] | null = null;
+    for (const claim of Object.values(this.videoClaims)) {
+      if (!winner) {
+        winner = claim;
+        continue;
+      }
+      if (claim.layer > winner.layer) {
+        winner = claim;
+        continue;
+      }
+      if (claim.layer === winner.layer && claim.claimedAtMs > winner.claimedAtMs) {
+        winner = claim;
+      }
+    }
+
+    if (!winner) {
+      this.activeVideoActionId = null;
+      this.pause();
+      this.unbindEngine();
+      this.setActive(false);
+      return;
+    }
+
+    this.activeVideoActionId = winner.actionId;
+    this.setActive(true);
+    this.setRate(winner.engine.getPlayRate());
+    this.setSource(winner.src);
+    const desired = Math.max(0, this.lastEngineTime - winner.actionStart + winner.offset);
+    this.seek(desired, { force: !winner.isPlaying });
+    if (winner.isPlaying) {
+      void this.play();
+    } else {
+      this.pause();
+    }
   }
 
   bindEngine(engine: TimelineEngine, actionStart: number) {

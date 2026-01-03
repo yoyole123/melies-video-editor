@@ -11,6 +11,8 @@ export interface CustomTimelineAction extends TimelineAction {
     src: string;
     previewSrc?: string;
     name: string;
+    /** Video lane index (0=V1, 1=V2). Higher value wins when overlapping. */
+    videoLayer?: number;
     /** Shared id for clips that should move/trim together (e.g. video + its embedded audio). */
     linkId?: string;
     /**
@@ -83,58 +85,54 @@ export const mockEffect: Record<string, TimelineEffect> = {
     name: 'Play video',
     source: {
       start: ({ action, engine, isPlaying, time }) => {
-        const { src, previewSrc, offset } = (action as CustomTimelineAction).data ?? ({} as any);
+        const { src, previewSrc, offset, videoLayer } = (action as CustomTimelineAction).data ?? ({} as any);
         const chosen = previewSrc || src;
-        if (chosen) {
-          videoControl.warm(chosen);
-          videoControl.setSource(chosen);
-        }
-        videoControl.setActive(true);
-        videoControl.setRate(engine.getPlayRate());
-        const inPoint = Number(offset ?? 0);
-        videoControl.seek(Math.max(0, time - action.start + (Number.isFinite(inPoint) ? inPoint : 0)), { force: true });
-        if (isPlaying) {
-          videoControl.play();
-        }
+        if (chosen) videoControl.warm(chosen);
+        videoControl.claimVideo({
+          actionId: String(action.id),
+          layer: Number.isFinite(Number(videoLayer)) ? Number(videoLayer) : 0,
+          src: chosen,
+          engine,
+          isPlaying,
+          time,
+          actionStart: Number(action.start),
+          offset,
+        });
       },
       enter: ({ action, engine, isPlaying, time }) => {
-        const { src, previewSrc, offset } = (action as CustomTimelineAction).data ?? ({} as any);
+        const { src, previewSrc, offset, videoLayer } = (action as CustomTimelineAction).data ?? ({} as any);
         const chosen = previewSrc || src;
-        if (chosen) {
-          videoControl.warm(chosen);
-          videoControl.setSource(chosen);
-        }
-        videoControl.setActive(true);
-        videoControl.setRate(engine.getPlayRate());
-        const inPoint = Number(offset ?? 0);
-        videoControl.seek(Math.max(0, time - action.start + (Number.isFinite(inPoint) ? inPoint : 0)), { force: true });
-        if (isPlaying) {
-          videoControl.play();
-        }
+        if (chosen) videoControl.warm(chosen);
+        videoControl.claimVideo({
+          actionId: String(action.id),
+          layer: Number.isFinite(Number(videoLayer)) ? Number(videoLayer) : 0,
+          src: chosen,
+          engine,
+          isPlaying,
+          time,
+          actionStart: Number(action.start),
+          offset,
+        });
       },
       update: ({ action, engine, time, isPlaying }) => {
-        const { src, previewSrc, offset } = (action as CustomTimelineAction).data ?? ({} as any);
+        const { src, previewSrc, offset, videoLayer } = (action as CustomTimelineAction).data ?? ({} as any);
         const chosen = previewSrc || src;
-        if (chosen) videoControl.setSource(chosen);
-        videoControl.setActive(true);
-        videoControl.setRate(engine.getPlayRate());
-        const inPoint = Number(offset ?? 0);
-        const desired = Math.max(0, time - action.start + (Number.isFinite(inPoint) ? inPoint : 0));
-
-        // When paused/scrubbing, force seek for accurate frame preview.
-        // When playing, still allow seeks (throttled inside videoControl) so cursor jumps
-        // immediately reflect the new timecode.
-        videoControl.seek(desired, { force: !isPlaying });
+        videoControl.claimVideo({
+          actionId: String(action.id),
+          layer: Number.isFinite(Number(videoLayer)) ? Number(videoLayer) : 0,
+          src: chosen,
+          engine,
+          isPlaying,
+          time,
+          actionStart: Number(action.start),
+          offset,
+        });
       },
-      leave: () => {
-        videoControl.pause();
-        videoControl.unbindEngine();
-        videoControl.setActive(false);
+      leave: ({ action }) => {
+        videoControl.releaseVideo(String(action.id));
       },
-      stop: () => {
-        videoControl.pause();
-        videoControl.unbindEngine();
-        videoControl.setActive(false);
+      stop: ({ action }) => {
+        videoControl.releaseVideo(String(action.id));
       },
     },
   },

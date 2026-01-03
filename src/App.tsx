@@ -157,11 +157,14 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = true }: MeliesVideo
   // Lane layout (row indexes) used by this app.
   // 0: V1
   // 1: V2
-  // 2: A1
-  // 3: A2
-  const VIDEO_ROW_INDEXES = [0, 1] as const;
-  const AUDIO_ROW_INDEXES = [2, 3] as const;
-  const LANE_LABELS = ['V1', 'V2', 'A1', 'A2'] as const;
+  // Row layout (array order = visual top -> bottom).
+  // We want higher logical track numbers to appear visually higher.
+  // For a 4-row layout the visual top->bottom will be: V2, V1, A2, A1
+  // VIDEO_ROW_INDEXES: [indexOfV1, indexOfV2]
+  // AUDIO_ROW_INDEXES: [indexOfA1, indexOfA2]
+  const VIDEO_ROW_INDEXES = [1, 0] as const;
+  const AUDIO_ROW_INDEXES = [3, 2] as const;
+  const LANE_LABELS = ['V2', 'V1', 'A2', 'A1'] as const;
 
   const pickNearestRowIndex = (rawRowIndex: number | null, candidateIndexes: readonly number[]) => {
     if (candidateIndexes.length === 0) return null;
@@ -213,6 +216,8 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = true }: MeliesVideo
 
       if (item.kind === 'video') {
         const linkId = `link-${uid()}`;
+        // videoLayer: higher number = visually higher track. Compute based on VIDEO_ROW_INDEXES mapping.
+        const layerForTarget = VIDEO_ROW_INDEXES.findIndex((x) => x === targetVideoRow);
         next[targetVideoRow].actions.push({
           id: `video-${uid()}`,
           start,
@@ -223,6 +228,7 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = true }: MeliesVideo
             previewSrc: item.previewSrc,
             name: item.name,
             linkId,
+            videoLayer: layerForTarget,
           },
         } as CustomTimelineAction);
 
@@ -609,6 +615,7 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = true }: MeliesVideo
         const clipId = `video-${uid()}`;
         const audioId = `video-audio-${uid()}`;
 
+        const layerForV = VIDEO_ROW_INDEXES.findIndex((x) => x === vRow);
         next[vRow].actions = [
           ...(next[vRow].actions ?? []),
           {
@@ -616,7 +623,7 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = true }: MeliesVideo
             start,
             end,
             effectId: 'effect1',
-            data: { src: item.src, previewSrc: item.previewSrc, name: item.name, linkId },
+            data: { src: item.src, previewSrc: item.previewSrc, name: item.name, linkId, videoLayer: layerForV },
           } as CustomTimelineAction,
         ];
 
