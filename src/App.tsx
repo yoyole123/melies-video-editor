@@ -1311,47 +1311,50 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
       onDragCancel={handleDragCancel}
     >
       <div className="timeline-editor-engine">
-        <div className="footage-ribbon" role="toolbar" aria-label="Footage">
-          <button
-            type="button"
-            className={`footage-ribbon-toggle${isFootageBinOpen ? ' is-open' : ''}`}
-            aria-expanded={isFootageBinOpen}
-            aria-controls="footage-bin-panel"
-            onClick={() => setIsFootageBinOpen((v) => !v)}
-          >
-            <img src={footageIconUrl} alt="Footage" draggable={false} />
-          </button>
-        </div>
-
-        <div
-          id="footage-bin-panel"
-          className={`footage-bin-panel${isFootageBinOpen ? ' is-open' : ''}`}
-          aria-hidden={!isFootageBinOpen}
-        >
-          <div className="footage-bin">
-            {footageBin.map((item) => (
-              <DraggableFootageCard
-                key={item.id}
-                item={item}
-                hint={isMobile ? 'Press-hold, then drag into timeline' : 'Drag into timeline'}
-              />
-            ))}
+        <div className="player-stack">
+          <div className="footage-ribbon" role="toolbar" aria-label="Footage">
+            <button
+              type="button"
+              className={`footage-ribbon-toggle${isFootageBinOpen ? ' is-open' : ''}`}
+              aria-expanded={isFootageBinOpen}
+              aria-controls="footage-bin-panel"
+              onClick={() => setIsFootageBinOpen((v) => !v)}
+            >
+              <img src={footageIconUrl} alt="Footage" draggable={false} />
+            </button>
           </div>
-        </div>
-        <div className="player-panel" ref={playerPanel}>
-          <video
-            className="player-video"
-            preload="auto"
-            playsInline
-            muted
-            controls={false}
-            disablePictureInPicture
-            disableRemotePlayback
-            controlsList="nodownload noplaybackrate noremoteplayback"
-            tabIndex={-1}
-            onContextMenu={(e) => e.preventDefault()}
-            ref={(el) => videoControl.attach(el)}
-          />
+
+          <div
+            id="footage-bin-panel"
+            className={`footage-bin-panel${isFootageBinOpen ? ' is-open' : ''}${activeFootage ? ' is-dragging' : ''}`}
+            aria-hidden={!isFootageBinOpen}
+          >
+            <div className="footage-bin">
+              {footageBin.map((item) => (
+                <DraggableFootageCard
+                  key={item.id}
+                  item={item}
+                  hint={isMobile ? 'Press-hold, then drag into timeline' : 'Drag into timeline'}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div className="player-panel" ref={playerPanel}>
+            <video
+              className="player-video"
+              preload="auto"
+              playsInline
+              muted
+              controls={false}
+              disablePictureInPicture
+              disableRemotePlayback
+              controlsList="nodownload noplaybackrate noremoteplayback"
+              tabIndex={-1}
+              onContextMenu={(e) => e.preventDefault()}
+              ref={(el) => videoControl.attach(el)}
+            />
+          </div>
         </div>
         <TimelinePlayer
           timelineState={timelineState}

@@ -17,7 +17,7 @@
     background: #2b2b2b;
     border: 1px solid #3a3a3a;
     border-radius: 6px;
-    padding: 8px;
+    padding: 4px;
     cursor: grab;
     user-select: none;
     -webkit-user-select: none;
@@ -33,9 +33,9 @@
   }
 
   .footage-name {
-    font-size: 12px;
+    font-size: 10px;
     color: #ddd;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -43,7 +43,7 @@
 
   .footage-preview {
     width: 100%;
-    height: 90px;
+    height: 55px;
     display: block;
     object-fit: cover;
     background: #000;
@@ -52,12 +52,12 @@
 
   .footage-audio {
     width: 100%;
-    height: 32px;
+    height: 22px;
   }
 
   .footage-kind {
-    margin-top: 6px;
-    font-size: 11px;
+    margin-top: 4px;
+    font-size: 9px;
     color: #aaa;
   }
 
@@ -65,19 +65,30 @@
     width: 100%;
     max-width: 800px;
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
     margin-bottom: 0;
+  }
+
+  .player-stack {
+    width: 100%;
+    max-width: 800px;
+    position: relative;
+    --footage-ribbon-h: 34px;
+    --player-panel-h: 300px;
   }
 
   .footage-ribbon {
     width: 100%;
-    max-width: 800px;
-    height: 34px;
-    padding: 0 6px;
+    height: var(--footage-ribbon-h);
+    padding: 0 8px;
     display: flex;
     align-items: center;
     background-color: #3a3a3a;
+    border: 1px solid #3a3a3a;
+    border-bottom: 1px solid #2b2b2b;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
   }
 
   .footage-ribbon-toggle {
@@ -87,8 +98,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background-color: #666;
-    border: none;
+    background-color: #2b2b2b;
+    border: 1px solid #3a3a3a;
     padding: 0;
     cursor: pointer;
     touch-action: manipulation;
@@ -109,30 +120,45 @@
 
   .footage-bin-panel {
     width: 100%;
-    max-width: 800px;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: var(--footage-ribbon-h);
+    z-index: 5;
     overflow: hidden;
     max-height: 0;
     opacity: 0;
-    transform: translateY(-6px);
+    transform: translateY(-8px);
     pointer-events: none;
-    transition: max-height 220ms ease, opacity 180ms ease, transform 220ms ease;
+    background: #2b2b2b;
+    border: 1px solid #3a3a3a;
+    border-top: none;
+    border-bottom-left-radius: 6px;
+    border-bottom-right-radius: 6px;
+    transition: max-height 240ms ease, opacity 180ms ease, transform 240ms ease;
   }
 
   .footage-bin-panel.is-open {
-    max-height: 60vh;
+    max-height: var(--player-panel-h);
     opacity: 1;
     transform: translateY(0);
     pointer-events: auto;
+    overflow: auto;
+  }
+
+  .footage-bin-panel.is-dragging {
+    overflow: hidden;
+    touch-action: none;
   }
 
   .footage-bin-panel .footage-bin {
-    padding: 10px 6px 12px;
+    padding: 8px 6px 10px;
   }
 
   .player-panel {
     width: 100%;
     max-width: 800px;
-    height: 300px;
+    height: var(--player-panel-h);
     position: relative;
     background: #000;
 
@@ -415,7 +441,12 @@
 
   @media (pointer: coarse) {
     .footage-ribbon {
-      height: 36px;
+      height: var(--footage-ribbon-h);
+    }
+
+    .player-stack {
+      --footage-ribbon-h: 36px;
+      --player-panel-h: 220px;
     }
 
     .footage-ribbon-toggle {
@@ -429,7 +460,7 @@
     }
 
     .footage-bin {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
     }
 
     .footage-bin .footage-card {
@@ -438,7 +469,7 @@
     }
 
     .player-panel {
-      height: 220px;
+      height: var(--player-panel-h);
     }
 
     .timeline-editor {
