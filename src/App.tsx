@@ -10,6 +10,7 @@ import TimelinePlayer from './player';
 import videoControl from './videoControl';
 import mediaCache from './mediaCache';
 import { useCoarsePointer } from './useCoarsePointer';
+import footageIconUrl from './assets/footage.png';
 import {
   DndContext,
   DragOverlay,
@@ -114,13 +115,14 @@ const nameFromUrl = (url: string, index: number) => {
   }
 };
 
-const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = true }: MeliesVideoEditorProps) => {
+const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVideoEditorProps) => {
   const [data, setData] = useState<CusTomTimelineRow[]>(() => createEmptyEditorData());
   const [selectedActionId, setSelectedActionId] = useState<string | null>(null);
   const [past, setPast] = useState<CusTomTimelineRow[][]>([]);
   const [future, setFuture] = useState<CusTomTimelineRow[][]>([]);
   const dataRef = useRef<CusTomTimelineRow[]>(data);
   const isMobile = useCoarsePointer();
+  const [isFootageBinOpen, setIsFootageBinOpen] = useState(false);
   const timelineState = useRef<TimelineState | null>(null);
   const playerPanel = useRef<HTMLDivElement | null>(null);
   const timelineWrapRef = useRef<HTMLDivElement | null>(null);
@@ -1309,7 +1311,23 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = true }: MeliesVideo
       onDragCancel={handleDragCancel}
     >
       <div className="timeline-editor-engine">
-        <div className="player-config">
+        <div className="footage-ribbon" role="toolbar" aria-label="Footage">
+          <button
+            type="button"
+            className={`footage-ribbon-toggle${isFootageBinOpen ? ' is-open' : ''}`}
+            aria-expanded={isFootageBinOpen}
+            aria-controls="footage-bin-panel"
+            onClick={() => setIsFootageBinOpen((v) => !v)}
+          >
+            <img src={footageIconUrl} alt="Footage" draggable={false} />
+          </button>
+        </div>
+
+        <div
+          id="footage-bin-panel"
+          className={`footage-bin-panel${isFootageBinOpen ? ' is-open' : ''}`}
+          aria-hidden={!isFootageBinOpen}
+        >
           <div className="footage-bin">
             {footageBin.map((item) => (
               <DraggableFootageCard
