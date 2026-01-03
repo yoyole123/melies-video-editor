@@ -93,6 +93,14 @@ export type MeliesVideoEditorProps = {
   footageUrls?: string[];
 
   /**
+   * Optional mapping from a full-quality video URL to a lower-quality proxy URL used for preview playback.
+   *
+   * When provided and it returns a string, video clips will preview using `previewSrc` (smaller/faster),
+   * while export continues to use the original `src`.
+   */
+  getPreviewSrc?: (src: string) => string | undefined | null;
+
+  /**
    * When true, automatically place `footageUrls` onto the timeline on first initialization
    * (one after another, starting at t=0).
    *
@@ -117,7 +125,7 @@ const nameFromUrl = (url: string, index: number) => {
   }
 };
 
-const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVideoEditorProps) => {
+const MeliesVideoEditor = ({ footageUrls, getPreviewSrc, autoPlaceFootage = false }: MeliesVideoEditorProps) => {
   const [data, setData] = useState<CusTomTimelineRow[]>(() => createEmptyEditorData());
   const [selectedActionId, setSelectedActionId] = useState<string | null>(null);
   const [past, setPast] = useState<CusTomTimelineRow[][]>([]);
@@ -133,14 +141,34 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
   const footageBin = useMemo<FootageItem[]>(() => {
     const urls = Array.isArray(footageUrls) ? footageUrls.filter(Boolean) : [];
     if (!urls.length) return [];
-    return urls.map((src, index) => ({
-      id: `url-${index}`,
-      kind: inferFootageKindFromUrl(src),
-      name: nameFromUrl(src, index),
-      src,
-      defaultDuration: 10,
-    }));
-  }, [footageUrls]);
+    return urls.map((src, index) => {
+      const kind = inferFootageKindFromUrl(src);
+      const previewSrc = kind === 'video' ? (getPreviewSrc?.(src) ?? undefined) : undefined;
+      return {
+        id: `url-${index}`,
+        kind,
+        name: nameFromUrl(src, index),
+        src,
+        previewSrc: previewSrc || undefined,
+        defaultDuration: 10,
+      };
+    });
+  }, [footageUrls, getPreviewSrc]);
+
+  // Preload provided footage upfront so cursor scrubbing is immediate.
+  // Concurrency is intentionally low to avoid spiking bandwidth / main-thread work.
+  useEffect(() => {
+    const urls = Array.isArray(footageUrls) ? footageUrls.filter(Boolean) : [];
+    if (!urls.length) return;
+    // Prefer warming the preview proxy (if present) for video.
+    const toWarm: string[] = [];
+    for (const src of urls) {
+      const kind = inferFootageKindFromUrl(src);
+      const preview = kind === 'video' ? (getPreviewSrc?.(src) ?? undefined) : undefined;
+      toWarm.push(preview || src);
+    }
+    void mediaCache.warmAll(toWarm, { concurrency: 2, yieldBetween: true });
+  }, [footageUrls, getPreviewSrc]);
 
   const [activeFootage, setActiveFootage] = useState<FootageItem | null>(null);
   const [activeFootageSize, setActiveFootageSize] = useState<{ width: number; height: number } | null>(null);

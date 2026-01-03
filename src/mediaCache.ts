@@ -54,6 +54,54 @@ class MediaCache {
     void this.preloadToBlobUrl(src);
   }
 
+  /**
+   * Preload a list of srcs with bounded concurrency.
+   *
+   * This is useful when you know ahead of time which assets will be scrubbed/seeked,
+   * so we can eliminate network stalls during interaction.
+   */
+  async warmAll(
+    srcs: Iterable<string>,
+    opts?: {
+      /** Maximum number of concurrent fetches. Defaults to 3. */
+      concurrency?: number;
+      /** Yield back to the event loop between items. Defaults to true. */
+      yieldBetween?: boolean;
+    }
+  ): Promise<void> {
+    const unique: string[] = [];
+    const seen = new Set<string>();
+
+    for (const raw of srcs) {
+      const src = String(raw ?? '');
+      if (!src) continue;
+      if (seen.has(src)) continue;
+      seen.add(src);
+
+      const kind = guessKind(src);
+      if (kind !== 'video' && kind !== 'audio') continue;
+      unique.push(src);
+    }
+
+    if (unique.length === 0) return;
+
+    const concurrency = Math.max(1, Math.floor(opts?.concurrency ?? 3));
+    const yieldBetween = opts?.yieldBetween !== false;
+
+    let idx = 0;
+    const workers = Array.from({ length: Math.min(concurrency, unique.length) }, async () => {
+      while (idx < unique.length) {
+        const src = unique[idx++];
+        await this.preloadToBlobUrl(src);
+        if (yieldBetween) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+      }
+    });
+
+    await Promise.all(workers);
+  }
+
   /** Convenience: preload all unique action.data.src from editor data. */
   warmFromEditorData(editorData: unknown): void {
     const srcs = new Set<string>();
@@ -64,7 +112,9 @@ class MediaCache {
       if (!Array.isArray(actions)) continue;
       for (const action of actions) {
         const src = (action as any)?.data?.src;
+        const previewSrc = (action as any)?.data?.previewSrc;
         if (typeof src === 'string' && src) srcs.add(src);
+        if (typeof previewSrc === 'string' && previewSrc) srcs.add(previewSrc);
       }
     }
 
