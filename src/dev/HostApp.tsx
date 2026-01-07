@@ -1,7 +1,15 @@
 import { useMemo, useState } from 'react';
 import { MeliesVideoEditor } from '../lib';
 
-export default function HostApp({ footageUrls }: { footageUrls?: string[] }) {
+export default function HostApp({
+  footageUrls,
+  footageFiles,
+  footageFileHandles,
+}: {
+  footageUrls?: string[];
+  footageFiles?: File[];
+  footageFileHandles?: Array<{ getFile: () => Promise<File>; name?: string }>;
+}) {
   const [note, setNote] = useState('');
   const [clicks, setClicks] = useState(0);
 
@@ -41,7 +49,11 @@ export default function HostApp({ footageUrls }: { footageUrls?: string[] }) {
         </aside>
 
         <main className="dev-host__main">
-          <MeliesVideoEditor footageUrls={footageUrls} />
+          <MeliesVideoEditor
+            footageUrls={footageUrls}
+            footageFiles={footageFiles}
+            footageFileHandles={footageFileHandles}
+          />
         </main>
       </div>
     </div>

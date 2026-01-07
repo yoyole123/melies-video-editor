@@ -93,6 +93,24 @@ export type MeliesVideoEditorProps = {
   footageUrls?: string[];
 
   /**
+   * Local Files to show in the footage bin.
+   *
+   * This is ideal for OPFS (Base44 can load from OPFS and pass `File`s here).
+   */
+  footageFiles?: File[];
+
+  /**
+   * Handle-like objects (e.g. `FileSystemFileHandle`) that can yield `File`s.
+   *
+   * We intentionally avoid depending on `FileSystemFileHandle` directly so
+   * consumers without that DOM lib type can still compile.
+   */
+  footageFileHandles?: Array<{
+    getFile: () => Promise<File>;
+    name?: string;
+  }>;
+
+  /**
    * When true, automatically place `footageUrls` onto the timeline on first initialization
    * (one after another, starting at t=0).
    *
@@ -117,7 +135,19 @@ const nameFromUrl = (url: string, index: number) => {
   }
 };
 
-const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVideoEditorProps) => {
+const inferFootageKindFromFile = (file: File): FootageItem['kind'] => {
+  const t = String(file?.type ?? '').toLowerCase();
+  if (t.startsWith('audio/')) return 'audio';
+  if (t.startsWith('video/')) return 'video';
+  return inferFootageKindFromUrl(file?.name ?? '');
+};
+
+const MeliesVideoEditor = ({
+  footageUrls,
+  footageFiles,
+  footageFileHandles,
+  autoPlaceFootage = false,
+}: MeliesVideoEditorProps) => {
   const [data, setData] = useState<CusTomTimelineRow[]>(() => createEmptyEditorData());
   const [selectedActionId, setSelectedActionId] = useState<string | null>(null);
   const [past, setPast] = useState<CusTomTimelineRow[][]>([]);
@@ -130,7 +160,7 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
   const timelineWrapRef = useRef<HTMLDivElement | null>(null);
   const autoScrollWhenPlay = useRef<boolean>(true);
 
-  const footageBin = useMemo<FootageItem[]>(() => {
+  const urlFootageBin = useMemo<FootageItem[]>(() => {
     const urls = Array.isArray(footageUrls) ? footageUrls.filter(Boolean) : [];
     if (!urls.length) return [];
     return urls.map((src, index) => ({
@@ -141,6 +171,96 @@ const MeliesVideoEditor = ({ footageUrls, autoPlaceFootage = false }: MeliesVide
       defaultDuration: 10,
     }));
   }, [footageUrls]);
+
+  const [fileFootageBin, setFileFootageBin] = useState<FootageItem[]>([]);
+  const [handleFootageBin, setHandleFootageBin] = useState<FootageItem[]>([]);
+
+  useEffect(() => {
+    const files = Array.isArray(footageFiles) ? footageFiles.filter(Boolean) : [];
+    if (files.length === 0) {
+      setFileFootageBin([]);
+      return;
+    }
+
+    const urlsToRevoke: string[] = [];
+    const next: FootageItem[] = files.map((file, index) => {
+      const url = URL.createObjectURL(file);
+      urlsToRevoke.push(url);
+      mediaCache.registerSrcMeta(url, { name: file.name, mimeType: file.type });
+      return {
+        id: `file-${index}`,
+        kind: inferFootageKindFromFile(file),
+        name: file.name || `Footage ${index + 1}`,
+        src: url,
+        defaultDuration: 10,
+      };
+    });
+
+    setFileFootageBin(next);
+
+    return () => {
+      for (const url of urlsToRevoke) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, [footageFiles]);
+
+  useEffect(() => {
+    const handles = Array.isArray(footageFileHandles) ? footageFileHandles.filter(Boolean) : [];
+    if (handles.length === 0) {
+      setHandleFootageBin([]);
+      return;
+    }
+
+    let cancelled = false;
+    const urlsToRevoke: string[] = [];
+
+    const run = async () => {
+      const next: FootageItem[] = [];
+      for (let index = 0; index < handles.length; index++) {
+        const handle = handles[index];
+        try {
+          const file = await handle.getFile();
+          if (cancelled) return;
+          const url = URL.createObjectURL(file);
+          urlsToRevoke.push(url);
+          mediaCache.registerSrcMeta(url, { name: file.name || handle?.name, mimeType: file.type });
+          next.push({
+            id: `handle-${index}`,
+            kind: inferFootageKindFromFile(file),
+            name: file.name || handle?.name || `Footage ${index + 1}`,
+            src: url,
+            defaultDuration: 10,
+          });
+        } catch (err) {
+          console.warn('[MeliesVideoEditor] Failed to load file handle', err);
+        }
+      }
+      if (cancelled) return;
+      setHandleFootageBin(next);
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+      for (const url of urlsToRevoke) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, [footageFileHandles]);
+
+  const footageBin = useMemo<FootageItem[]>(() => {
+    return [...urlFootageBin, ...fileFootageBin, ...handleFootageBin];
+  }, [urlFootageBin, fileFootageBin, handleFootageBin]);
 
   const [activeFootage, setActiveFootage] = useState<FootageItem | null>(null);
   const [activeFootageSize, setActiveFootageSize] = useState<{ width: number; height: number } | null>(null);

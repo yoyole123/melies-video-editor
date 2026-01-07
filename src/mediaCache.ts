@@ -10,6 +10,28 @@ const guessKind = (src: string): MediaKind => {
 class MediaCache {
   private blobUrlBySrc = new Map<string, string>();
   private pendingBySrc = new Map<string, Promise<string>>();
+  private metaBySrc = new Map<string, { name?: string; mimeType?: string }>();
+
+  registerSrcMeta(src: string, meta: { name?: string; mimeType?: string }): void {
+    const key = String(src ?? '');
+    if (!key) return;
+    const next = {
+      name: meta?.name ? String(meta.name) : undefined,
+      mimeType: meta?.mimeType ? String(meta.mimeType) : undefined,
+    };
+    // Keep the most informative values we have.
+    const existing = this.metaBySrc.get(key);
+    this.metaBySrc.set(key, {
+      name: existing?.name ?? next.name,
+      mimeType: existing?.mimeType ?? next.mimeType,
+    });
+  }
+
+  getSrcMeta(src: string): { name?: string; mimeType?: string } | undefined {
+    const key = String(src ?? '');
+    if (!key) return undefined;
+    return this.metaBySrc.get(key);
+  }
 
   /**
    * Preloads a URL into memory and returns a blob: URL.
@@ -17,6 +39,10 @@ class MediaCache {
    */
   async preloadToBlobUrl(src: string): Promise<string> {
     if (!src) return src;
+
+    // Already-local sources: no need (and often impossible) to "fetch" them.
+    if (src.startsWith('blob:') || src.startsWith('data:')) return src;
+
     const existing = this.blobUrlBySrc.get(src);
     if (existing) return existing;
 
@@ -51,6 +77,8 @@ class MediaCache {
 
   /** Starts preload in background (non-blocking). */
   warm(src: string): void {
+    if (!src) return;
+    if (src.startsWith('blob:') || src.startsWith('data:')) return;
     void this.preloadToBlobUrl(src);
   }
 

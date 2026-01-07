@@ -17,6 +17,29 @@ const inferHowlerFormat = (src: string): string | undefined => {
   return ext;
 };
 
+const inferHowlerFormatFromMime = (mimeType: string): string | undefined => {
+  const t = String(mimeType ?? '').toLowerCase();
+  if (!t) return undefined;
+  if (t === 'audio/mpeg' || t === 'audio/mp3') return 'mp3';
+  if (t === 'audio/wav' || t === 'audio/x-wav') return 'wav';
+  if (t === 'audio/ogg') return 'ogg';
+  if (t === 'audio/aac') return 'aac';
+  // Many browsers report m4a as audio/mp4.
+  if (t === 'audio/mp4' || t === 'video/mp4') return 'mp4';
+  return undefined;
+};
+
+const inferHowlerFormatForSrc = (src: string): string | undefined => {
+  const direct = inferHowlerFormat(src);
+  if (direct) return direct;
+  const meta = mediaCache.getSrcMeta(src);
+  const fromName = meta?.name ? inferHowlerFormat(meta.name) : undefined;
+  if (fromName) return fromName;
+  const fromMime = meta?.mimeType ? inferHowlerFormatFromMime(meta.mimeType) : undefined;
+  if (fromMime) return fromMime;
+  return undefined;
+};
+
 class AudioControl {
   private howlBySrc: Record<string, Howl> = {};
   private activeByActionId: Record<
@@ -35,13 +58,13 @@ class AudioControl {
 
   private getHowl(src: string): Howl {
     const resolved = mediaCache.resolve(src);
-    // Howler cannot reliably infer format from blob: URLs (no extension).
-    // Prefer the original URL (with extension) for playback.
-    const urlForHowler = resolved.startsWith('blob:') ? src : resolved;
+    // Prefer the resolved (often blob:) URL to avoid network stalls.
+    // If it's a blob URL we must provide a format hint (filename/mimeType).
+    const urlForHowler = resolved;
     const cacheKey = urlForHowler;
     if (this.howlBySrc[cacheKey]) return this.howlBySrc[cacheKey];
 
-    const format = inferHowlerFormat(src);
+    const format = inferHowlerFormatForSrc(src) ?? inferHowlerFormatForSrc(resolved);
     const howl = new Howl({
       src: [urlForHowler],
       format: format ? [format] : undefined,

@@ -3,6 +3,7 @@ import { Button, Select } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import audioControl from './audioControl';
 import videoControl from './videoControl';
+import mediaCache from './mediaCache';
 import playButtonUrl from './assets/play-button.png';
 import pauseButtonUrl from './assets/pause-button.png';
 import undoIconUrl from './assets/undo.png';
@@ -209,7 +210,8 @@ const TimelinePlayer = ({
       form.append('timeline', JSON.stringify({ editorData }));
 
       for (const src of srcs) {
-        const resp = await fetch(src);
+        const resolved = mediaCache.resolve(src);
+        const resp = await fetch(resolved);
         if (!resp.ok) throw new Error(`Failed to fetch asset: ${src} (${resp.status})`);
         const blob = await resp.blob();
         form.append('assets', blob, encodeURIComponent(src));

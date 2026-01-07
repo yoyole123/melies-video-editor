@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client';
 import './index.css';
 import App from './App.tsx';
 import HostApp from './dev/HostApp';
+import DevRoot from './dev/DevRoot';
+
+const normalizeVitePublicUrl = (url: string) => String(url ?? '').replace(/^\/public\//, '/');
 
 const getDevFootageUrls = () => {
   // Dev-only convenience: load everything in public/footage into the footage bin.
@@ -11,12 +14,13 @@ const getDevFootageUrls = () => {
 
   const modules = import.meta.glob('../public/footage/**/*.{mp4,webm,mov,mp3,wav,m4a,aac,ogg}', {
     eager: true,
-    as: 'url',
+    query: '?url',
+    import: 'default',
   });
 
   return Object.entries(modules)
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([, url]) => String(url));
+    .map(([, url]) => normalizeVitePublicUrl(String(url)));
 };
 
 const devFootageUrls = getDevFootageUrls();
@@ -32,6 +36,10 @@ const Root = shouldUseDevHostApp() ? HostApp : App;
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <Root footageUrls={devFootageUrls} />
+    {import.meta.env.DEV ? (
+      <DevRoot defaultFootageUrls={devFootageUrls} useHostShell={shouldUseDevHostApp()} />
+    ) : (
+      <Root />
+    )}
   </StrictMode>
 );
