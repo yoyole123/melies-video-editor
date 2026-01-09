@@ -37,6 +37,80 @@ const createEmptyEditorData = (): CusTomTimelineRow[] => [
 
 const MAX_HISTORY = 5;
 
+// Timeline times are stored in seconds as floating point numbers.
+// Quantize to avoid tiny rounding gaps that can cause a visible black flash
+// at clip boundaries (playback logic uses exclusive end).
+const TIME_QUANTUM_SEC = 0.001; // 1ms
+const MIN_ACTION_DURATION_SEC = 0.01;
+const MICRO_GAP_MAX_SEC = 0.03; // collapse only very small gaps (rounding/precision), not intentional spacing
+
+const quantizeTimeSec = (t: number) => {
+  const n = Number(t);
+  if (!Number.isFinite(n)) return 0;
+  // Using multiply/divide avoids cumulative floating point drift from repeated +/- operations.
+  return Math.round(n / TIME_QUANTUM_SEC) * TIME_QUANTUM_SEC;
+};
+
+const quantizeRangeSec = (start: number, end: number) => {
+  const s = Math.max(0, quantizeTimeSec(start));
+  const e = Math.max(0, quantizeTimeSec(end));
+  if (e <= s) return { start: s, end: s + MIN_ACTION_DURATION_SEC };
+  return { start: s, end: e };
+};
+
+const quantizeEditorData = (rows: CusTomTimelineRow[]): CusTomTimelineRow[] => {
+  let changed = false;
+  const next = rows.map((row) => {
+    const actions = Array.isArray(row?.actions) ? row.actions : [];
+    const nextActions = actions.map((action) => {
+      const start = Number((action as unknown as { start?: unknown })?.start);
+      const end = Number((action as unknown as { end?: unknown })?.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return action;
+      const q = quantizeRangeSec(start, end);
+      if (q.start === start && q.end === end) return action;
+      changed = true;
+      return { ...action, start: q.start, end: q.end } as unknown as CustomTimelineAction;
+    });
+    return { ...row, actions: nextActions as unknown as CusTomTimelineRow['actions'] };
+  });
+  return changed ? next : rows;
+};
+
+const warnIfVideoGaps = (rows: CusTomTimelineRow[]) => {
+  // Dev-only diagnostic: if there is an actual gap between adjacent video clips,
+  // preview playback will go black there (exclusive end).
+  try {
+    const videoRowIndexes = [0, 1];
+    for (const rowIndex of videoRowIndexes) {
+      const row = rows[rowIndex];
+      const actions = Array.isArray(row?.actions) ? row.actions : [];
+      const vids = actions
+        .filter((a) => String((a as unknown as { effectId?: unknown })?.effectId ?? '') === 'effect1')
+        .map((a) => ({
+          id: String((a as unknown as { id?: unknown })?.id ?? ''),
+          start: Number((a as unknown as { start?: unknown })?.start),
+          end: Number((a as unknown as { end?: unknown })?.end),
+        }))
+        .filter((a) => a.id && Number.isFinite(a.start) && Number.isFinite(a.end))
+        .sort((a, b) => a.start - b.start);
+
+      for (let i = 0; i < vids.length - 1; i++) {
+        const cur = vids[i];
+        const nxt = vids[i + 1];
+        const gap = nxt.start - cur.end;
+        if (gap > 0.001) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[timeline] gap on V${rowIndex + 1}: ${gap.toFixed(3)}s between ${cur.id} (end=${cur.end.toFixed(3)}) and ${nxt.id} (start=${nxt.start.toFixed(3)})`
+          );
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+};
+
 const FootageCard = ({ item, hint, isDragging }: { item: FootageItem; hint: string; isDragging: boolean }) => {
   return (
     <div className={`footage-card${isDragging ? ' is-dragging' : ''}`}>
@@ -153,6 +227,12 @@ const MeliesVideoEditor = ({
   const [past, setPast] = useState<CusTomTimelineRow[][]>([]);
   const [future, setFuture] = useState<CusTomTimelineRow[][]>([]);
   const dataRef = useRef<CusTomTimelineRow[]>(data);
+
+  // Sync data to VideoControl for lookahead/double-buffering
+  useEffect(() => {
+     videoControl.setEditorData(data);
+  }, [data]);
+
   const isMobile = useCoarsePointer();
   const [isFootageBinOpen, setIsFootageBinOpen] = useState(false);
   const timelineState = useRef<TimelineState | null>(null);
@@ -359,8 +439,8 @@ const MeliesVideoEditor = ({
     let t = 0;
     for (const item of footageBin) {
       const duration = Math.max(0.01, Number(item.defaultDuration ?? 10));
-      const start = t;
-      const end = t + duration;
+      const start = quantizeTimeSec(t);
+      const end = quantizeTimeSec(t + duration);
       t = end;
 
       if (item.kind === 'video') {
@@ -778,7 +858,8 @@ const MeliesVideoEditor = ({
   };
 
   const setStartEndForActionAndLinked = (rows: CusTomTimelineRow[], sourceActionId: string, nextStart: number, nextEnd: number) => {
-    if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd) || nextEnd <= nextStart) return rows;
+    const q = quantizeRangeSec(nextStart, nextEnd);
+    if (!Number.isFinite(q.start) || !Number.isFinite(q.end) || q.end <= q.start) return rows;
 
     const source = findActionById(rows, sourceActionId);
     if (!source) return rows;
@@ -792,13 +873,13 @@ const MeliesVideoEditor = ({
 
     const sourceRow = next[source.rowIndex];
     const sourceActions = Array.isArray(sourceRow.actions) ? [...sourceRow.actions] : [];
-    const updatedSource: CustomTimelineAction = { ...(sourceActions[source.actionIndex] as any), start: nextStart, end: nextEnd };
+    const updatedSource: CustomTimelineAction = { ...(sourceActions[source.actionIndex] as any), start: q.start, end: q.end };
     sourceActions.splice(source.actionIndex, 1, updatedSource as any);
     sourceRow.actions = sourceActions as any;
 
     const partnerRow = next[partner.rowIndex];
     const partnerActions = Array.isArray(partnerRow.actions) ? [...partnerRow.actions] : [];
-    const updatedPartner: CustomTimelineAction = { ...(partnerActions[partner.actionIndex] as any), start: nextStart, end: nextEnd };
+    const updatedPartner: CustomTimelineAction = { ...(partnerActions[partner.actionIndex] as any), start: q.start, end: q.end };
     partnerActions.splice(partner.actionIndex, 1, updatedPartner as any);
     partnerRow.actions = partnerActions as any;
 
@@ -806,17 +887,18 @@ const MeliesVideoEditor = ({
   };
 
   const setStartEndForActionOnly = (rows: CusTomTimelineRow[], sourceActionId: string, nextStart: number, nextEnd: number) => {
-    if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd) || nextEnd <= nextStart) return rows;
+    const q = quantizeRangeSec(nextStart, nextEnd);
+    if (!Number.isFinite(q.start) || !Number.isFinite(q.end) || q.end <= q.start) return rows;
     const source = findActionById(rows, sourceActionId);
     if (!source) return rows;
     const existingStart = Number(source.action.start);
     const existingEnd = Number(source.action.end);
-    if (existingStart === nextStart && existingEnd === nextEnd) return rows;
+    if (existingStart === q.start && existingEnd === q.end) return rows;
 
     const next = structuredClone(rows) as CusTomTimelineRow[];
     const sourceRow = next[source.rowIndex];
     const sourceActions = Array.isArray(sourceRow.actions) ? [...sourceRow.actions] : [];
-    const updatedSource: CustomTimelineAction = { ...(sourceActions[source.actionIndex] as any), start: nextStart, end: nextEnd };
+    const updatedSource: CustomTimelineAction = { ...(sourceActions[source.actionIndex] as any), start: q.start, end: q.end };
     sourceActions.splice(source.actionIndex, 1, updatedSource as any);
     sourceRow.actions = sourceActions as any;
     return next;
@@ -907,8 +989,8 @@ const MeliesVideoEditor = ({
     targetRowIndex?: number | null
   ) => {
     const duration = item.defaultDuration ?? 10;
-    let start = Math.max(0, at);
-    let end = start + duration;
+    let start = Math.max(0, quantizeTimeSec(at));
+    let end = quantizeTimeSec(start + duration);
 
     const state = timelineState.current;
     if (state?.isPlaying) state.pause();
@@ -940,8 +1022,8 @@ const MeliesVideoEditor = ({
         // Bump forward until [start,end] doesn't overlap any interval.
         for (const other of intervals) {
           if (!rangesOverlap(start, end, other.start, other.end)) continue;
-          start = other.end;
-          end = start + duration;
+          start = quantizeTimeSec(other.end);
+          end = quantizeTimeSec(start + duration);
         }
       };
 
@@ -960,8 +1042,8 @@ const MeliesVideoEditor = ({
           ...(next[vRow].actions ?? []),
           {
             id: clipId,
-            start,
-            end,
+            start: quantizeTimeSec(start),
+            end: quantizeTimeSec(end),
             effectId: 'effect1',
             data: { src: item.src, previewSrc: item.previewSrc, name: item.name, linkId, videoLayer: layerForV },
           } as CustomTimelineAction,
@@ -971,8 +1053,8 @@ const MeliesVideoEditor = ({
           ...(next[aRow].actions ?? []),
           {
             id: audioId,
-            start,
-            end,
+            start: quantizeTimeSec(start),
+            end: quantizeTimeSec(end),
             effectId: 'effect2',
             data: { src: item.src, name: item.name, linkId },
           } as CustomTimelineAction,
@@ -985,15 +1067,17 @@ const MeliesVideoEditor = ({
           ...(next[aRow].actions ?? []),
           {
             id: `audio-${uid()}`,
-            start,
-            end,
+            start: quantizeTimeSec(start),
+            end: quantizeTimeSec(end),
             effectId: 'effect0',
             data: { src: item.src, name: item.name },
           } as CustomTimelineAction,
         ];
       }
 
-      return next;
+      const q = quantizeEditorData(next);
+      if (import.meta.env.DEV) warnIfVideoGaps(q);
+      return q;
     });
   };
 
@@ -1030,8 +1114,8 @@ const MeliesVideoEditor = ({
     rows: CusTomTimelineRow[]
   ): number => {
     const duration = item.defaultDuration ?? 10;
-    let start = Math.max(0, desiredStart);
-    let end = start + duration;
+    let start = Math.max(0, quantizeTimeSec(desiredStart));
+    let end = quantizeTimeSec(start + duration);
 
     const rowIndexes: number[] = [];
     if (item.kind === 'video') {
@@ -1057,11 +1141,11 @@ const MeliesVideoEditor = ({
 
     for (const other of intervals) {
       if (!rangesOverlap(start, end, other.start, other.end)) continue;
-      start = other.end;
-      end = start + duration;
+      start = quantizeTimeSec(other.end);
+      end = quantizeTimeSec(start + duration);
     }
 
-    return Math.max(0, start);
+    return Math.max(0, quantizeTimeSec(start));
   };
 
   const rowIndexFromClientY = (clientY: number) => {
@@ -1900,8 +1984,9 @@ const MeliesVideoEditor = ({
           </div>
 
           <div className="player-panel" ref={playerPanel}>
+            {/* Dual video elements for seamless playback (Double Buffering) */}
             <video
-              className="player-video"
+              className="player-video player-video-primary"
               preload="auto"
               playsInline
               muted
@@ -1911,7 +1996,20 @@ const MeliesVideoEditor = ({
               controlsList="nodownload noplaybackrate noremoteplayback"
               tabIndex={-1}
               onContextMenu={(e) => e.preventDefault()}
-              ref={(el) => videoControl.attach(el)}
+              ref={(el) => videoControl.attachPrimary(el)}
+            />
+            <video
+              className="player-video player-video-secondary"
+              preload="auto" // Preload next clip
+              playsInline
+              muted
+              controls={false}
+              disablePictureInPicture
+              disableRemotePlayback
+              controlsList="nodownload noplaybackrate noremoteplayback"
+              tabIndex={-1}
+              onContextMenu={(e) => e.preventDefault()}
+              ref={(el) => videoControl.attachSecondary(el)}
             />
           </div>
         </div>
@@ -2548,13 +2646,47 @@ const MeliesVideoEditor = ({
               }
 
               const nextReconciled = reconcileLanePlacement(nextLinked, sourceActionId);
-              setData(nextReconciled);
+
+              // Normalize times to avoid tiny rounding gaps, and collapse micro-gaps that are
+              // almost certainly accidental (precision drift). Larger gaps are preserved.
+              let normalized = quantizeEditorData(nextReconciled);
+              for (const vRowIndex of VIDEO_ROW_INDEXES) {
+                const row = normalized[vRowIndex];
+                const actions = Array.isArray(row?.actions) ? row.actions : [];
+                const vids = actions
+                  .filter((a) => String((a as unknown as { effectId?: unknown })?.effectId ?? '') === 'effect1')
+                  .map((a) => ({
+                    id: String((a as unknown as { id?: unknown })?.id ?? ''),
+                    start: Number((a as unknown as { start?: unknown })?.start),
+                    end: Number((a as unknown as { end?: unknown })?.end),
+                  }))
+                  .filter((a) => a.id && Number.isFinite(a.start) && Number.isFinite(a.end))
+                  .sort((a, b) => a.start - b.start);
+
+                for (let i = 0; i < vids.length - 1; i++) {
+                  const cur = vids[i];
+                  const nxt = vids[i + 1];
+                  const gap = nxt.start - cur.end;
+                  if (gap > 0 && gap <= MICRO_GAP_MAX_SEC) {
+                    const dur = nxt.end - nxt.start;
+                    const ns = quantizeTimeSec(cur.end);
+                    const ne = quantizeTimeSec(ns + dur);
+                    const partner = findLinkedPartner(normalized, nxt.id);
+                    normalized = partner
+                      ? setStartEndForActionAndLinked(normalized, nxt.id, ns, ne)
+                      : setStartEndForActionOnly(normalized, nxt.id, ns, ne);
+                  }
+                }
+              }
+              normalized = quantizeEditorData(normalized);
+              if (import.meta.env.DEV) warnIfVideoGaps(normalized);
+              setData(normalized);
 
               // If this onChange is the result of a drag/resize gesture, record a single history entry.
               const pendingBefore = pendingHistoryBeforeRef.current;
               const pendingSig = pendingHistorySignatureRef.current;
               if (pendingBefore && pendingSig) {
-                const nextSig = getTimelineSignature(nextReconciled);
+                const nextSig = getTimelineSignature(normalized);
                 if (nextSig !== pendingSig) pushHistory(pendingBefore);
                 pendingHistoryBeforeRef.current = null;
                 pendingHistorySignatureRef.current = null;

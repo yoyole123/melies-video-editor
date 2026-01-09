@@ -1,4 +1,4 @@
-import type { TimelineState } from '@xzdarcy/react-timeline-editor';
+import type { TimelineEngine, TimelineState } from '@xzdarcy/react-timeline-editor';
 import { Button, Select } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import audioControl from './audioControl';
@@ -53,6 +53,22 @@ const TimelinePlayer = ({
   const lastUndoAt = useRef(0);
   const lastRedoAt = useRef(0);
 
+  const debugVideoEnabled = () => {
+    try {
+      const ls = globalThis.localStorage?.getItem('melies.debugVideo');
+      if (ls === '1' || ls === 'true') return true;
+    } catch {
+      // ignore
+    }
+    try {
+      const sp = new URLSearchParams(globalThis.location?.search ?? '');
+      return sp.get('debugVideo') === '1' || sp.get('debugVideo') === 'true';
+    } catch {
+      return false;
+    }
+  };
+  const lastOverVideoRef = useRef<boolean | null>(null);
+
   const canDelete = Boolean(selectedActionId);
 
   const getSelectedActionRange = () => {
@@ -95,19 +111,38 @@ const TimelinePlayer = ({
 
   const syncBlackFrame = (t: number) => {
     const overVideo = isTimeOverVideo(t);
+
+    if (import.meta.env.DEV && debugVideoEnabled()) {
+      const prev = lastOverVideoRef.current;
+      if (prev == null || prev !== overVideo) {
+        // eslint-disable-next-line no-console
+        console.log(`[timeline] overVideo=${overVideo} at t=${t.toFixed(3)}`);
+        lastOverVideoRef.current = overVideo;
+      }
+    }
+
     if (!overVideo) {
       // Defensive: ensure preview is black between clips even if a leave callback is missed.
-      videoControl.pause();
-      videoControl.unbindEngine();
-      videoControl.setActive(false);
+      // videoControl.pause();
+      // videoControl.unbindEngine();
+      // videoControl.setActive(false);
     }
   };
 
   useEffect(() => {
     if (!timelineState.current) return;
     const engine = timelineState.current;
-    const onPlay = () => setIsPlaying(true);
-    const onPaused = () => setIsPlaying(false);
+
+    // Keep VideoControl continuously synced to the engine time (needed for gaps to go black).
+    videoControl.bindEngine(engine as unknown as TimelineEngine);
+    const onPlay = () => {
+      setIsPlaying(true);
+      videoControl.play(); // Sync VideoControl
+    };
+    const onPaused = () => {
+      setIsPlaying(false);
+      videoControl.pause(); // Sync VideoControl
+    };
     const onAfterSetTime = ({ time }: { time: number }) => {
       setTime(time);
       syncBlackFrame(time);
@@ -141,6 +176,8 @@ const TimelinePlayer = ({
       engine.listener.off('paused', onPaused);
       engine.listener.off('afterSetTime', onAfterSetTime);
       engine.listener.off('setTimeByTick', onSetTimeByTick);
+
+      videoControl.unbindEngine();
     };
   }, [editorData]);
 
@@ -160,6 +197,7 @@ const TimelinePlayer = ({
   const handleRateChange = (rate: number) => {
     if (!timelineState.current) return;
     timelineState.current.setPlayRate(rate);
+    videoControl.setRate(rate);
   };
 
   // Time display
