@@ -34,16 +34,18 @@ export const mockEffect: Record<string, TimelineEffect> = {
     source: {
       start: ({ action, engine, isPlaying, time }) => {
         if (isPlaying) {
-          const { src, offset } = (action as CustomTimelineAction).data;
-          audioControl.warm(src);
-          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time, offset });
+          const { src, previewSrc, offset } = (action as CustomTimelineAction).data;
+          const chosen = previewSrc || src;
+          audioControl.warm(chosen);
+          audioControl.start({ actionId: action.id, src: chosen, startTime: action.start, engine, time, offset });
         }
       },
       enter: ({ action, engine, isPlaying, time }) => {
         if (isPlaying) {
-          const { src, offset } = (action as CustomTimelineAction).data;
-          audioControl.warm(src);
-          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time, offset });
+          const { src, previewSrc, offset } = (action as CustomTimelineAction).data;
+          const chosen = previewSrc || src;
+          audioControl.warm(chosen);
+          audioControl.start({ actionId: action.id, src: chosen, startTime: action.start, engine, time, offset });
         }
       },
       leave: ({ action }) => {
@@ -60,16 +62,18 @@ export const mockEffect: Record<string, TimelineEffect> = {
     source: {
       start: ({ action, engine, isPlaying, time }) => {
         if (isPlaying) {
-          const { src, offset } = (action as CustomTimelineAction).data;
-          audioControl.warm(src);
-          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time, offset });
+          const { src, previewSrc, offset } = (action as CustomTimelineAction).data;
+          const chosen = previewSrc || src;
+          audioControl.warm(chosen);
+          audioControl.start({ actionId: action.id, src: chosen, startTime: action.start, engine, time, offset });
         }
       },
       enter: ({ action, engine, isPlaying, time }) => {
         if (isPlaying) {
-          const { src, offset } = (action as CustomTimelineAction).data;
-          audioControl.warm(src);
-          audioControl.start({ actionId: action.id, src, startTime: action.start, engine, time, offset });
+          const { src, previewSrc, offset } = (action as CustomTimelineAction).data;
+          const chosen = previewSrc || src;
+          audioControl.warm(chosen);
+          audioControl.start({ actionId: action.id, src: chosen, startTime: action.start, engine, time, offset });
         }
       },
       leave: ({ action }) => {

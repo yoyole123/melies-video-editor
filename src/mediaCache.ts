@@ -9,6 +9,7 @@ const guessKind = (src: string): MediaKind => {
 
 class MediaCache {
   private blobUrlBySrc = new Map<string, string>();
+  private originalFileBySrc = new Map<string, File>();
   private pendingBySrc = new Map<string, Promise<string>>();
   private metaBySrc = new Map<string, { name?: string; mimeType?: string }>();
 
@@ -25,6 +26,18 @@ class MediaCache {
       name: existing?.name ?? next.name,
       mimeType: existing?.mimeType ?? next.mimeType,
     });
+  }
+
+  registerBlobUrl(src: string, blobUrl: string) {
+    this.blobUrlBySrc.set(src, blobUrl);
+  }
+
+  registerOriginalFile(src: string, file: File) {
+    this.originalFileBySrc.set(src, file);
+  }
+
+  getOriginal(src: string): File | undefined {
+    return this.originalFileBySrc.get(src);
   }
 
   getSrcMeta(src: string): { name?: string; mimeType?: string } | undefined {
@@ -141,8 +154,10 @@ class MediaCache {
       for (const action of actions) {
         const src = (action as any)?.data?.src;
         const previewSrc = (action as any)?.data?.previewSrc;
-        if (typeof src === 'string' && src) srcs.add(src);
-        if (typeof previewSrc === 'string' && previewSrc) srcs.add(previewSrc);
+        // If we have a preview/proxy source, prefer warming that.
+        // Warming the raw source may fetch large files into RAM and defeat OPFS/proxy benefits.
+        const chosen = typeof previewSrc === 'string' && previewSrc ? previewSrc : src;
+        if (typeof chosen === 'string' && chosen) srcs.add(chosen);
       }
     }
 

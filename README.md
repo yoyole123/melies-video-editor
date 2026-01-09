@@ -12,6 +12,21 @@ This project is not affiliated with the upstream author.
 
 - Start the UI (demo app): `pnpm dev`
 
+### Proxy media preparation (OPFS + FFmpeg.wasm)
+
+To keep editing playback smooth for large/high-res footage, the editor can generate persistent proxy media (video + audio) into the browser’s OPFS.
+
+Requirements:
+- The page must be `crossOriginIsolated` (for `SharedArrayBuffer`). In dev this repo enables it via COOP/COEP headers in `vite.config.ts`.
+- In production, your host app must serve **either**:
+	- `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` (most common), **or**
+	- a compatible COEP/COOP setup for your deployment.
+- Footage URLs used during editing should be same-origin, or served with appropriate CORS/CORP headers. Otherwise COEP can block loading them.
+
+Notes:
+- `pnpm install` copies `@ffmpeg/core` assets into `public/ffmpeg/` for same-origin loading.
+- If the environment can’t be `crossOriginIsolated`, the editor falls back to raw playback (no proxies).
+
 ### Dev host wrapper (simulate embedding)
 
 By default, `pnpm dev` runs the standalone editor view.

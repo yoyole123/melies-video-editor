@@ -248,6 +248,12 @@ const TimelinePlayer = ({
       form.append('timeline', JSON.stringify({ editorData }));
 
       for (const src of srcs) {
+        const original = mediaCache.getOriginal(src);
+        if (original) {
+          form.append('assets', original, encodeURIComponent(src));
+          continue;
+        }
+
         const resolved = mediaCache.resolve(src);
         const resp = await fetch(resolved);
         if (!resp.ok) throw new Error(`Failed to fetch asset: ${src} (${resp.status})`);

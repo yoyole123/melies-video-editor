@@ -3,6 +3,7 @@ import HostApp from './HostApp';
 import { MeliesVideoEditor } from '../lib';
 import mediaCache from '../mediaCache';
 import { clearDir, ensureOpfsRoot, getFileFromPublicUrl, listFiles, writeBlobToOpfs } from './opfs';
+import { AssetLoader } from '../AssetLoader';
 
 type Mode =
   | 'legacy-url'
@@ -10,7 +11,8 @@ type Mode =
   | 'legacy-opfs'
   | 'new-blob'
   | 'new-opfs-files'
-  | 'new-opfs-handles';
+  | 'new-opfs-handles'
+  | 'proxy-flow';
 
 type Source = 'samples' | 'upload';
 
@@ -51,6 +53,7 @@ export default function DevRoot({
       'new-blob',
       'new-opfs-files',
       'new-opfs-handles',
+      'proxy-flow',
     ] as const;
     return (ok.includes(raw as any) ? (raw as Mode) : 'new-opfs-files') as Mode;
   }, []);
@@ -65,6 +68,8 @@ export default function DevRoot({
   const [status, setStatus] = useState<string>('');
 
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
+
+  const [proxyAssets, setProxyAssets] = useState<{ src: string; name: string }[] | null>(null);
 
   const [footageUrls, setFootageUrls] = useState<string[] | undefined>(undefined);
   const [footageFiles, setFootageFiles] = useState<File[] | undefined>(undefined);
@@ -251,6 +256,20 @@ export default function DevRoot({
   }, [mode, source, uploadedFiles, sampleUrls.join('|')]);
 
   useEffect(() => {
+    if (mode === 'proxy-flow' && proxyAssets) {
+      // The AssetLoader registers blob URLs for these "src" IDs.
+      // We pass the IDs as urls. MeliesVideoEditor will treat them as URLs.
+      // It will play them because mediaCache.preloadToBlobUrl is not automatically called by App.tsx logic...
+      // Wait, we need to make sure App.tsx doesn't crash on "video.mp4" URL fetch if preload fails.
+      // But we PRE-REGISTERED them in AssetLoader.
+      // So mediaCache.pendingBySrc.get('video.mp4') -- no
+      // mediaCache.blobUrlBySrc.get('video.mp4') -- YES!
+      // So mediaCache.resolve('video.mp4') returns the blob URL.
+      setFootageUrls(proxyAssets.map((p) => p.src));
+    }
+  }, [mode, proxyAssets]);
+
+  useEffect(() => {
     return () => {
       clearBlobUrls();
     };
@@ -292,6 +311,7 @@ export default function DevRoot({
             <option value="new-blob">New: Files (footageFiles=File[])</option>
             <option value="new-opfs-files">New: OPFS Files (OPFS → File[])</option>
             <option value="new-opfs-handles">New: OPFS Handles (OPFS → handles)</option>
+            <option value="proxy-flow">Proxy Flow (OPFS + Transcode)</option>
           </select>
         </label>
 
@@ -312,7 +332,9 @@ export default function DevRoot({
         {isAudioDemo ? <div style={{ fontSize: 12, color: '#555' }}>Audio: included</div> : null}
       </div>
 
-      {useHostShell && EditorRoot ? (
+      {mode === 'proxy-flow' && !proxyAssets ? (
+        <AssetLoader onComplete={setProxyAssets} />
+      ) : useHostShell && EditorRoot ? (
         <EditorRoot {...editorProps} />
       ) : (
         <MeliesVideoEditor {...editorProps} />

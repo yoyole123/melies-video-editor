@@ -18,6 +18,7 @@
     border: 1px solid #3a3a3a;
     border-radius: 6px;
     padding: 4px;
+    position: relative;
     cursor: grab;
     user-select: none;
     -webkit-user-select: none;
@@ -61,6 +62,25 @@
     color: #aaa;
   }
 
+  .footage-prep {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.55);
+    border-radius: 6px;
+    pointer-events: none;
+  }
+
+  .footage-prep-text {
+    font-size: 10px;
+    color: #fff;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
   .footage-bin {
     width: 100%;
     max-width: 800px;
@@ -68,6 +88,16 @@
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px;
     margin-bottom: 0;
+  }
+
+  .footage-prep-summary {
+    grid-column: 1 / -1;
+    font-size: 11px;
+    color: #ddd;
+    background: #2b2b2b;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    padding: 6px 8px;
   }
 
   .player-stack {

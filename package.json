@@ -34,12 +34,16 @@
     "dev": "vite --host",
     "dev:server": "node server/index.mjs",
     "build": "tsc -b && vite build && tsc -p tsconfig.types.json",
+    "postinstall": "node scripts/copy-ffmpeg-core.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
     "@ant-design/icons": "4.7.0",
     "@dnd-kit/core": "^6.3.1",
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.10",
+    "@ffmpeg/util": "^0.12.1",
     "@xzdarcy/react-timeline-editor": "0.1.8",
     "antd": "4.21.6",
     "howler": "2.2.3",

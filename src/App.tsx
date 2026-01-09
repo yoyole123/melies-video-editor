@@ -9,6 +9,7 @@ import type { FootageItem } from './footageBin';
 import TimelinePlayer from './player';
 import videoControl from './videoControl';
 import mediaCache from './mediaCache';
+import transcodeQueue, { type PrepareProgress } from './services/transcodeQueue';
 import { useCoarsePointer } from './useCoarsePointer';
 import footageIconUrl from './assets/footage.png';
 import zoomInIconUrl from './assets/zoom-in.png';
@@ -111,14 +112,24 @@ const warnIfVideoGaps = (rows: CusTomTimelineRow[]) => {
   }
 };
 
-const FootageCard = ({ item, hint, isDragging }: { item: FootageItem; hint: string; isDragging: boolean }) => {
+const FootageCard = ({
+  item,
+  hint,
+  isDragging,
+  prep,
+}: {
+  item: FootageItem;
+  hint: string;
+  isDragging: boolean;
+  prep?: { stage: PrepareProgress['stage']; ratio: number; message?: string };
+}) => {
   return (
     <div className={`footage-card${isDragging ? ' is-dragging' : ''}`}>
       <div className="footage-name">{item.name}</div>
       {item.kind === 'video' ? (
         <video
           className="footage-preview"
-          src={item.src}
+          src={item.previewSrc || item.src}
           muted
           preload="metadata"
           draggable={false}
@@ -128,7 +139,7 @@ const FootageCard = ({ item, hint, isDragging }: { item: FootageItem; hint: stri
       ) : (
         <audio
           className="footage-audio"
-          src={item.src}
+          src={item.previewSrc || item.src}
           controls
           preload="metadata"
           draggable={false}
@@ -136,11 +147,28 @@ const FootageCard = ({ item, hint, isDragging }: { item: FootageItem; hint: stri
         />
       )}
       <div className="footage-kind">{hint}</div>
+      {prep && prep.stage === 'error' ? (
+        <div className="footage-prep">
+          <div className="footage-prep-text">Optimization failed{prep.message ? `: ${prep.message}` : ''}</div>
+        </div>
+      ) : prep && prep.stage !== 'ready' && prep.stage !== 'unsupported' ? (
+        <div className="footage-prep">
+          <div className="footage-prep-text">Optimizing… {Math.round((prep.ratio ?? 0) * 100)}%</div>
+        </div>
+      ) : null}
     </div>
   );
 };
 
-const DraggableFootageCard = ({ item, hint }: { item: FootageItem; hint: string }) => {
+const DraggableFootageCard = ({
+  item,
+  hint,
+  prep,
+}: {
+  item: FootageItem;
+  hint: string;
+  prep?: { stage: PrepareProgress['stage']; ratio: number; message?: string };
+}) => {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `footage-${item.id}`,
     data: { item },
@@ -154,7 +182,7 @@ const DraggableFootageCard = ({ item, hint }: { item: FootageItem; hint: string 
 
   return (
     <div ref={setNodeRef} style={style} {...listeners} {...attributes}>
-      <FootageCard item={item} hint={hint} isDragging={isDragging} />
+      <FootageCard item={item} hint={hint} isDragging={isDragging} prep={prep} />
     </div>
   );
 };
@@ -267,6 +295,7 @@ const MeliesVideoEditor = ({
       const url = URL.createObjectURL(file);
       urlsToRevoke.push(url);
       mediaCache.registerSrcMeta(url, { name: file.name, mimeType: file.type });
+      mediaCache.registerOriginalFile(url, file);
       return {
         id: `file-${index}`,
         kind: inferFootageKindFromFile(file),
@@ -309,6 +338,7 @@ const MeliesVideoEditor = ({
           const url = URL.createObjectURL(file);
           urlsToRevoke.push(url);
           mediaCache.registerSrcMeta(url, { name: file.name || handle?.name, mimeType: file.type });
+          mediaCache.registerOriginalFile(url, file);
           next.push({
             id: `handle-${index}`,
             kind: inferFootageKindFromFile(file),
@@ -341,6 +371,85 @@ const MeliesVideoEditor = ({
   const footageBin = useMemo<FootageItem[]>(() => {
     return [...urlFootageBin, ...fileFootageBin, ...handleFootageBin];
   }, [urlFootageBin, fileFootageBin, handleFootageBin]);
+
+  const [prepBySrc, setPrepBySrc] = useState<
+    Record<string, { stage: PrepareProgress['stage']; ratio: number; message?: string; proxyVideoUrl?: string; proxyAudioUrl?: string }>
+  >({});
+
+  // Prepare proxies on editor init (and whenever the bin changes).
+  useEffect(() => {
+    let cancelled = false;
+    const unsub = transcodeQueue.subscribe((p) => {
+      if (cancelled) return;
+      setPrepBySrc((prev) => ({
+        ...prev,
+        [p.src]: {
+          stage: p.stage,
+          ratio: p.ratio,
+          message: p.message,
+          proxyVideoUrl: p.proxyVideoUrl,
+          proxyAudioUrl: p.proxyAudioUrl,
+        },
+      }));
+    });
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      const items = Array.isArray(footageBin) ? footageBin : [];
+      for (const item of items) {
+        if (cancelled) return;
+        if (item.kind !== 'video') continue;
+
+        const original = mediaCache.getOriginal(item.src);
+        const meta = mediaCache.getSrcMeta(item.src);
+        void transcodeQueue.enqueue({
+          kind: 'video',
+          src: item.src,
+          file: original,
+          nameHint: item.name || meta?.name,
+          mimeTypeHint: meta?.mimeType,
+        });
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [footageBin]);
+
+  const footageBinWithPreviews = useMemo<FootageItem[]>(() => {
+    return footageBin.map((item) => {
+      if (item.kind !== 'video') return item;
+      const prep = prepBySrc[item.src];
+      const previewSrc = prep?.proxyVideoUrl || item.previewSrc;
+      return { ...item, previewSrc };
+    });
+  }, [footageBin, prepBySrc]);
+
+  const prepSummary = useMemo(() => {
+    const items = footageBin.filter((x) => x.kind === 'video');
+    if (items.length === 0) return null;
+    let ready = 0;
+    let totalRatio = 0;
+    for (const it of items) {
+      const p = prepBySrc[it.src];
+      const r = p?.ratio ?? 0;
+      totalRatio += r;
+      if (p?.stage === 'ready' || p?.stage === 'unsupported' || p?.stage === 'error') ready++;
+    }
+    const avg = totalRatio / items.length;
+    const done = ready === items.length;
+    if (done) return null;
+    return { ready, total: items.length, ratio: avg };
+  }, [footageBin, prepBySrc]);
 
   const [activeFootage, setActiveFootage] = useState<FootageItem | null>(null);
   const [activeFootageSize, setActiveFootageSize] = useState<{ width: number; height: number } | null>(null);
@@ -426,7 +535,19 @@ const MeliesVideoEditor = ({
   useEffect(() => {
     if (!autoPlaceFootage) return;
     if (hasAutoPlacedFootageRef.current) return;
-    if (footageBin.length === 0) return;
+    if (footageBinWithPreviews.length === 0) return;
+
+    // If proxy optimization is supported, wait until video assets are prepared
+    // so the initial timeline starts smooth (no raw decode/buffering stutters).
+    const supported = Boolean((globalThis as any).crossOriginIsolated);
+    if (supported) {
+      const videos = footageBinWithPreviews.filter((x) => x.kind === 'video');
+      const allReady = videos.every((v) => {
+        const p = prepBySrc[v.src];
+        return p?.stage === 'ready' || p?.stage === 'unsupported' || p?.stage === 'error';
+      });
+      if (!allReady) return;
+    }
 
     const rowsNow = dataRef.current;
     const hasAnyActions = rowsNow.some((r) => Array.isArray(r?.actions) && r.actions.length > 0);
@@ -437,7 +558,7 @@ const MeliesVideoEditor = ({
 
     const next = createEmptyEditorData();
     let t = 0;
-    for (const item of footageBin) {
+    for (const item of footageBinWithPreviews) {
       const duration = Math.max(0.01, Number(item.defaultDuration ?? 10));
       const start = quantizeTimeSec(t);
       const end = quantizeTimeSec(t + duration);
@@ -468,6 +589,7 @@ const MeliesVideoEditor = ({
           effectId: 'effect2',
           data: {
             src: item.src,
+            previewSrc: prepBySrc[item.src]?.proxyAudioUrl ?? undefined,
             name: item.name,
             linkId,
           },
@@ -495,7 +617,7 @@ const MeliesVideoEditor = ({
     });
 
     hasAutoPlacedFootageRef.current = true;
-  }, [autoPlaceFootage, footageBin]);
+  }, [autoPlaceFootage, footageBinWithPreviews, prepBySrc]);
 
   // Preload media referenced by timeline actions to reduce buffering/stalls during playback.
   // This is intentionally fire-and-forget; cache dedupes across edits.
@@ -988,6 +1110,15 @@ const MeliesVideoEditor = ({
     at: number,
     targetRowIndex?: number | null
   ) => {
+    if (item.kind === 'video') {
+      const prep = prepBySrc[item.src];
+      const supported = Boolean((globalThis as any).crossOriginIsolated);
+      // If proxies are supported and we're still preparing, block insertion to avoid stutter.
+      if (supported && prep && (prep.stage === 'queued' || prep.stage === 'writing-raw' || prep.stage === 'transcoding')) {
+        return;
+      }
+    }
+
     const duration = item.defaultDuration ?? 10;
     let start = Math.max(0, quantizeTimeSec(at));
     let end = quantizeTimeSec(start + duration);
@@ -1056,7 +1187,8 @@ const MeliesVideoEditor = ({
             start: quantizeTimeSec(start),
             end: quantizeTimeSec(end),
             effectId: 'effect2',
-            data: { src: item.src, name: item.name, linkId },
+            // Use proxy audio if available, but keep src as the raw canonical identifier for export.
+            data: { src: item.src, previewSrc: (prepBySrc[item.src]?.proxyAudioUrl ?? undefined), name: item.name, linkId },
           } as CustomTimelineAction,
         ];
       } else {
@@ -1973,11 +2105,18 @@ const MeliesVideoEditor = ({
             aria-hidden={!isFootageBinOpen}
           >
             <div className="footage-bin">
-              {footageBin.map((item) => (
+              {prepSummary ? (
+                <div className="footage-prep-summary">
+                  Preparing media {prepSummary.ready}/{prepSummary.total}… {Math.round(prepSummary.ratio * 100)}%
+                </div>
+              ) : null}
+
+              {footageBinWithPreviews.map((item) => (
                 <DraggableFootageCard
                   key={item.id}
                   item={item}
                   hint={isMobile ? 'Press-hold, then drag into timeline' : 'Drag into timeline'}
+                  prep={prepBySrc[item.src]}
                 />
               ))}
             </div>
