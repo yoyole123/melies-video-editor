@@ -47,18 +47,18 @@ const MICRO_GAP_MAX_SEC = 0.03; // collapse only very small gaps (rounding/preci
 
 // Playback cheat tuning (mobile-first): pause, let decoding settle, seek, then resume.
 // These are intentionally small so the UI still feels responsive.
-const SEEK_PAUSE_BEFORE_MS = 35;
-const SEEK_AFTER_MS = 35;
-const SEEK_RESUME_BUFFER_AHEAD_SEC = 0.2;
-const SEEK_RESUME_BUFFER_TIMEOUT_MS = 700;
-const SEEK_RESUME_BUFFER_POLL_MS = 50;
+const SEEK_PAUSE_BEFORE_MS = 70;
+const SEEK_AFTER_MS = 70;
+const SEEK_RESUME_BUFFER_AHEAD_SEC = 0.4;
+const SEEK_RESUME_BUFFER_TIMEOUT_MS = 1400;
+const SEEK_RESUME_BUFFER_POLL_MS = 100;
 // While scrubbing/dragging, update preview at most ~4fps.
-const SCRUB_SET_TIME_MIN_INTERVAL_MS = 250;
+const SCRUB_SET_TIME_MIN_INTERVAL_MS = 500;
 
 // When the user releases a drag-scrub, we want noticeably more buffer before resuming.
-const SEEK_AFTER_SCRUB_MS = 160;
-const SEEK_RESUME_BUFFER_AHEAD_SCRUB_SEC = 0.45;
-const SEEK_RESUME_BUFFER_TIMEOUT_SCRUB_MS = 1600;
+const SEEK_AFTER_SCRUB_MS = 360;
+const SEEK_RESUME_BUFFER_AHEAD_SCRUB_SEC = 0.9;
+const SEEK_RESUME_BUFFER_TIMEOUT_SCRUB_MS = 3200;
 
 /** Sleep helper for the seek cheat (kept tiny to avoid UI feeling stuck). */
 const delayMs = (ms: number) =>
@@ -2065,17 +2065,140 @@ const MeliesVideoEditor = ({
   const seekJobIdRef = useRef(0);
   const wasPlayingOnPointerDownRef = useRef(false);
   const timeScrubbingRef = useRef<{ pointerId: number } | null>(null);
+  const timeAreaPointerRef = useRef<{ pointerId: number } | null>(null);
+  const skipNextTimeAreaClickRef = useRef(false);
+  const pendingHeaderResumeRef = useRef(false);
+  const ignoreNextAfterSetTimeRef = useRef(false);
+  const resumeJobIdRef = useRef(0);
 
   /**
    * Capture-phase pointer down handler to remember whether playback was active.
    * This runs even if the Timeline component stops propagation for certain regions
    * (notably the top timecode/header bar).
    */
-  const handleTimelinePointerDownCapture = (e: React.PointerEvent) => {
-    if (!isMobile) return;
-    if (e.pointerType === 'mouse') return;
+  const handleTimelinePointerDownCapture = () => {
     wasPlayingOnPointerDownRef.current = Boolean(timelineState.current?.isPlaying);
   };
+
+  useEffect(() => {
+    const handlePointerDownCapture = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+
+      const isTimeArea = Boolean(
+        target.closest?.('.timeline-editor-time-area-interact, .timeline-editor-time-area, .timeline-editor-time')
+      );
+      const isInsideTimeline = Boolean(timelineWrapRef.current?.contains(target));
+
+      if (!isTimeArea && !isInsideTimeline) return;
+
+      const wasPlaying = Boolean(timelineState.current?.isPlaying);
+      wasPlayingOnPointerDownRef.current = wasPlaying;
+
+      if (isTimeArea && wasPlaying) {
+        pendingHeaderResumeRef.current = true;
+      }
+
+      if (isMobile && event.pointerType !== 'mouse' && isTimeArea && Number.isFinite(event.pointerId)) {
+        timeAreaPointerRef.current = { pointerId: event.pointerId };
+      }
+    };
+
+    const handlePointerUpCapture = (event: PointerEvent) => {
+      if (!isMobile || event.pointerType === 'mouse') return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+
+      const activePointer = timeAreaPointerRef.current;
+      if (!activePointer || activePointer.pointerId !== event.pointerId) return;
+
+      const isTimeArea = Boolean(
+        target.closest?.('.timeline-editor-time-area-interact, .timeline-editor-time-area, .timeline-editor-time')
+      );
+      if (!isTimeArea) {
+        timeAreaPointerRef.current = null;
+        return;
+      }
+
+      // Manually compute time and apply seek+resume, since the Timeline component
+      // does not consistently resume playback for time-area taps on mobile.
+      const t = timeFromClientX(event.clientX);
+      setTimeWithPlaybackCheat(t, { resume: wasPlayingOnPointerDownRef.current });
+      wasPlayingOnPointerDownRef.current = false;
+
+      // Prevent double-handling if onClickTimeArea fires later.
+      skipNextTimeAreaClickRef.current = true;
+      timeAreaPointerRef.current = null;
+    };
+
+    document.addEventListener('pointerdown', handlePointerDownCapture, true);
+    document.addEventListener('pointerup', handlePointerUpCapture, true);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDownCapture, true);
+      document.removeEventListener('pointerup', handlePointerUpCapture, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let cleanup: (() => void) | null = null;
+
+    const attach = () => {
+      if (disposed) return;
+      const engine = timelineState.current as unknown as TimelineState | null;
+      if (!engine?.listener) {
+        requestAnimationFrame(attach);
+        return;
+      }
+
+      const onAfterSetTime = () => {
+        if (ignoreNextAfterSetTimeRef.current) {
+          ignoreNextAfterSetTimeRef.current = false;
+          return;
+        }
+
+        if (!pendingHeaderResumeRef.current) return;
+        pendingHeaderResumeRef.current = false;
+
+        const myJobId = ++resumeJobIdRef.current;
+        const run = async () => {
+          const state = timelineState.current;
+          if (!state) return;
+
+          state.pause?.();
+          await delayMs(SEEK_PAUSE_BEFORE_MS);
+          if (resumeJobIdRef.current !== myJobId) return;
+          await delayMs(SEEK_AFTER_MS);
+          if (resumeJobIdRef.current !== myJobId) return;
+
+          await videoControl.waitForActiveBufferedAhead({
+            minSecondsAhead: SEEK_RESUME_BUFFER_AHEAD_SEC,
+            timeoutMs: SEEK_RESUME_BUFFER_TIMEOUT_MS,
+            pollMs: SEEK_RESUME_BUFFER_POLL_MS,
+          });
+
+          if (resumeJobIdRef.current !== myJobId) return;
+          try {
+            audioControl.unlock();
+          } catch {
+            // ignore
+          }
+          state.play?.({ autoEnd: true });
+        };
+
+        void run();
+      };
+
+      engine.listener.on('afterSetTime', onAfterSetTime);
+      cleanup = () => engine.listener.off('afterSetTime', onAfterSetTime);
+    };
+
+    attach();
+    return () => {
+      disposed = true;
+      cleanup?.();
+    };
+  }, []);
 
   /**
    * Sets the playhead time. If currently playing, temporarily pauses and resumes.
@@ -2111,6 +2234,7 @@ const MeliesVideoEditor = ({
       await delayMs(pauseBeforeMs);
       if (seekJobIdRef.current !== myJobId) return;
 
+      ignoreNextAfterSetTimeRef.current = true;
       state.setTime(nextTime);
       // Some timeline implementations benefit from an explicit reRender to show the frame.
       state.reRender?.();
@@ -2373,9 +2497,15 @@ const MeliesVideoEditor = ({
             }}
             onClickTimeArea={(time, _e) => {
               setSelectedActionId(null);
+              if (skipNextTimeAreaClickRef.current) {
+                skipNextTimeAreaClickRef.current = false;
+                return undefined;
+              }
               // Click-to-seek (including top timecode/header bar): avoid seeking while engine is ticking.
-              // On mobile, force resume if we were playing at pointer-down.
-              setTimeWithPlaybackCheat(Number(time), { resume: wasPlayingOnPointerDownRef.current });
+              // Force resume if we were playing at pointer-down (mobile or desktop).
+              setTimeWithPlaybackCheat(Number(time), {
+                resume: wasPlayingOnPointerDownRef.current || Boolean(timelineState.current?.isPlaying),
+              });
               wasPlayingOnPointerDownRef.current = false;
               return undefined;
             }}
