@@ -460,6 +460,73 @@ class VideoControl {
   setActive(_active: boolean) {
     // No-op: Visibility is managed by updateState().
   }
+
+  /**
+   * Returns the active (visible) video element, if any.
+   * Useful for UI-level logic that needs to wait for buffering after a seek.
+   */
+  getActiveVideoElement(): HTMLVideoElement | null {
+    return this.activeEl;
+  }
+
+  /**
+   * Checks whether a video has at least `minSecondsAhead` buffered at its current time.
+   *
+   * Note: buffered ranges are in media time, not timeline time.
+   */
+  private hasBufferedAhead(el: HTMLVideoElement, minSecondsAhead: number): boolean {
+    const minAhead = Math.max(0, Number(minSecondsAhead) || 0);
+    const t = Number(el.currentTime);
+    if (!Number.isFinite(t)) return false;
+
+    try {
+      const ranges = el.buffered;
+      for (let i = 0; i < ranges.length; i++) {
+        const start = ranges.start(i);
+        const end = ranges.end(i);
+        if (t >= start && t <= end) {
+          return end - t >= minAhead;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  }
+
+  /**
+   * Waits until the active element appears ready for smooth playback after a seek.
+   * Returns true if the readiness criteria is met before timing out.
+   */
+  async waitForActiveBufferedAhead(opts?: {
+    minSecondsAhead?: number;
+    timeoutMs?: number;
+    pollMs?: number;
+  }): Promise<boolean> {
+    const minSecondsAhead = Math.max(0, Number(opts?.minSecondsAhead) || 0);
+    const timeoutMs = Math.max(0, Number(opts?.timeoutMs) || 0);
+    const pollMs = Math.max(10, Number(opts?.pollMs) || 50);
+    const startAt = performance.now();
+
+    while (performance.now() - startAt <= timeoutMs) {
+      const el = this.activeEl;
+      // If there's no active video under the cursor (black/gap), there's nothing to buffer.
+      if (!el) return true;
+
+      // We want at least current data (ideally future data) and no in-flight seek.
+      const ready = el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA;
+      const settled = !el.seeking;
+      const buffered = minSecondsAhead <= 0 ? true : this.hasBufferedAhead(el, minSecondsAhead);
+
+      if (ready && settled && buffered) return true;
+
+      await new Promise<void>((resolve) => {
+        setTimeout(() => resolve(), pollMs);
+      });
+    }
+
+    return false;
+  }
 }
 
 export default new VideoControl();

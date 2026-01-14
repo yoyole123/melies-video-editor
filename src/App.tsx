@@ -9,6 +9,7 @@ import type { FootageItem } from './footageBin';
 import TimelinePlayer from './player';
 import videoControl from './videoControl';
 import mediaCache from './mediaCache';
+import audioControl from './audioControl';
 import { useCoarsePointer } from './useCoarsePointer';
 import footageIconUrl from './assets/footage.png';
 import zoomInIconUrl from './assets/zoom-in.png';
@@ -43,6 +44,27 @@ const MAX_HISTORY = 5;
 const TIME_QUANTUM_SEC = 0.001; // 1ms
 const MIN_ACTION_DURATION_SEC = 0.01;
 const MICRO_GAP_MAX_SEC = 0.03; // collapse only very small gaps (rounding/precision), not intentional spacing
+
+// Playback cheat tuning (mobile-first): pause, let decoding settle, seek, then resume.
+// These are intentionally small so the UI still feels responsive.
+const SEEK_PAUSE_BEFORE_MS = 35;
+const SEEK_AFTER_MS = 35;
+const SEEK_RESUME_BUFFER_AHEAD_SEC = 0.2;
+const SEEK_RESUME_BUFFER_TIMEOUT_MS = 700;
+const SEEK_RESUME_BUFFER_POLL_MS = 50;
+// While scrubbing/dragging, update preview at most ~4fps.
+const SCRUB_SET_TIME_MIN_INTERVAL_MS = 250;
+
+// When the user releases a drag-scrub, we want noticeably more buffer before resuming.
+const SEEK_AFTER_SCRUB_MS = 160;
+const SEEK_RESUME_BUFFER_AHEAD_SCRUB_SEC = 0.45;
+const SEEK_RESUME_BUFFER_TIMEOUT_SCRUB_MS = 1600;
+
+/** Sleep helper for the seek cheat (kept tiny to avoid UI feeling stuck). */
+const delayMs = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(() => resolve(), Math.max(0, ms));
+  });
 
 const quantizeTimeSec = (t: number) => {
   const n = Number(t);
@@ -1847,16 +1869,31 @@ const MeliesVideoEditor = ({
   }, [activeFootage, isDragOverTimeline, dragClient, laneScrollLeft, laneScrollTop, ROW_HEIGHT_PX]);
 
   const handleTimelinePointerDown = (e: React.PointerEvent) => {
-    if (!isMobile) return;
-    // Only treat touch/pen as mobile gesture; mouse keeps desktop behavior.
-    if (e.pointerType === 'mouse') return;
     // If a dnd-kit drag is active, let it own the gesture.
     if (activeFootage) return;
+
+    /**
+     * Pause playback while the user scrubs/drags the playhead.
+     * This avoids repeated seeks while the engine is ticking (which can cause decoder stalls).
+     */
+    const beginScrubIfNeeded = () => {
+      const state = timelineState.current;
+      const wasPlaying = Boolean(state?.isPlaying);
+      resumeAfterScrubRef.current = wasPlaying;
+      if (wasPlaying) state?.pause?.();
+    };
+
+    // For mobile tap-to-seek (non-cursor hit), remember whether we were playing.
+    // Some internal timeline interactions can pause playback before our pointer-up runs.
+    if (isMobile && e.pointerType !== 'mouse') {
+      wasPlayingOnPointerDownRef.current = Boolean(timelineState.current?.isPlaying);
+    }
 
     // Cursor drag on mobile: the library's cursor drag is mouse-event oriented, so we shim it.
     const target = e.target as HTMLElement | null;
     const isCursorHit = Boolean(target?.closest?.('.timeline-editor-cursor-area, .timeline-editor-cursor'));
     if (isCursorHit) {
+      beginScrubIfNeeded();
       cursorDraggingRef.current = { pointerId: e.pointerId };
       timelinePointerDownRef.current = null;
       try {
@@ -1868,25 +1905,103 @@ const MeliesVideoEditor = ({
       return;
     }
 
+    // On desktop, don't override the library's mouse interactions beyond cursor drag.
+    if (!isMobile) return;
+    // Only treat touch/pen as mobile gesture; mouse keeps desktop behavior.
+    if (e.pointerType === 'mouse') return;
+
     timelinePointerDownRef.current = { x: e.clientX, y: e.clientY };
   };
 
   const handleTimelinePointerMove = (e: React.PointerEvent) => {
-    if (!isMobile) return;
-    if (e.pointerType === 'mouse') return;
     if (activeFootage) return;
-    if (!cursorDraggingRef.current) return;
-    if (cursorDraggingRef.current.pointerId !== e.pointerId) return;
 
-    const t = timeFromClientX(e.clientX);
-    if (timelineState.current) timelineState.current.setTime(t);
+    const isTouchLike = isMobile && e.pointerType !== 'mouse';
+    if (!isTouchLike) return;
+
+    const throttleSetTime = (t: number) => {
+      const now = performance.now();
+      if (now - lastScrubSetAtRef.current >= SCRUB_SET_TIME_MIN_INTERVAL_MS) {
+        lastScrubSetAtRef.current = now;
+        timelineState.current?.setTime?.(t);
+        return;
+      }
+      pendingScrubTimeRef.current = t;
+      if (scrubFlushRafRef.current) return;
+      scrubFlushRafRef.current = requestAnimationFrame(() => {
+        scrubFlushRafRef.current = null;
+        const next = pendingScrubTimeRef.current;
+        pendingScrubTimeRef.current = null;
+        if (next == null) return;
+        lastScrubSetAtRef.current = performance.now();
+        timelineState.current?.setTime?.(next);
+      });
+    };
+
+    // A) Cursor drag (explicit hit-test)
+    if (cursorDraggingRef.current && cursorDraggingRef.current.pointerId === e.pointerId) {
+      throttleSetTime(timeFromClientX(e.clientX));
+      e.preventDefault();
+      return;
+    }
+
+    // B) Time-area scrubbing: user drags anywhere on the timeline and the library moves the playhead.
+    // We treat horizontal drags as a scrub gesture.
+    const start = timelinePointerDownRef.current;
+    if (!start) return;
+
+    const dx = Math.abs(e.clientX - start.x);
+    const dy = Math.abs(e.clientY - start.y);
+    const HORIZONTAL_SCRUB_START_PX = 8;
+    const VERTICAL_SCRUB_CANCEL_PX = 14;
+
+    if (!timeScrubbingRef.current) {
+      if (dx < HORIZONTAL_SCRUB_START_PX) return;
+      if (dy > VERTICAL_SCRUB_CANCEL_PX) return;
+
+      // Promote to a scrub gesture.
+      timeScrubbingRef.current = { pointerId: e.pointerId };
+      // If we were playing at the start of the pointer gesture, pause now.
+      if (wasPlayingOnPointerDownRef.current) {
+        resumeAfterScrubRef.current = true;
+        timelineState.current?.pause?.();
+      }
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    }
+
+    if (timeScrubbingRef.current.pointerId !== e.pointerId) return;
+    throttleSetTime(timeFromClientX(e.clientX));
     e.preventDefault();
   };
 
   const handleTimelinePointerUp = (e: React.PointerEvent) => {
-    if (!isMobile) return;
-    if (e.pointerType === 'mouse') return;
     if (activeFootage) return;
+
+    // End time-area scrubbing.
+    if (timeScrubbingRef.current && timeScrubbingRef.current.pointerId === e.pointerId) {
+      timeScrubbingRef.current = null;
+      try {
+        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+      const t = timeFromClientX(e.clientX);
+      const shouldResume = resumeAfterScrubRef.current || wasPlayingOnPointerDownRef.current;
+      resumeAfterScrubRef.current = false;
+      wasPlayingOnPointerDownRef.current = false;
+      setTimeWithPlaybackCheat(t, {
+        resume: shouldResume,
+        afterSeekMs: SEEK_AFTER_SCRUB_MS,
+        bufferAheadSec: SEEK_RESUME_BUFFER_AHEAD_SCRUB_SEC,
+        bufferTimeoutMs: SEEK_RESUME_BUFFER_TIMEOUT_SCRUB_MS,
+      });
+      e.preventDefault();
+      return;
+    }
 
     // Finish cursor drag and don't treat it as a tap.
     if (cursorDraggingRef.current && cursorDraggingRef.current.pointerId === e.pointerId) {
@@ -1896,9 +2011,25 @@ const MeliesVideoEditor = ({
       } catch {
         // ignore
       }
+
+      // Cursor-drag scrub end: apply delayed seek + buffer wait + resume.
+      const t = timeFromClientX(e.clientX);
+      const shouldResume = resumeAfterScrubRef.current;
+      resumeAfterScrubRef.current = false;
+      setTimeWithPlaybackCheat(t, {
+        resume: shouldResume,
+        afterSeekMs: SEEK_AFTER_SCRUB_MS,
+        bufferAheadSec: SEEK_RESUME_BUFFER_AHEAD_SCRUB_SEC,
+        bufferTimeoutMs: SEEK_RESUME_BUFFER_TIMEOUT_SCRUB_MS,
+      });
+
       e.preventDefault();
       return;
     }
+
+    // On desktop, don't override the library's mouse interactions.
+    if (!isMobile) return;
+    if (e.pointerType === 'mouse') return;
 
     const start = timelinePointerDownRef.current;
     timelinePointerDownRef.current = null;
@@ -1923,7 +2054,90 @@ const MeliesVideoEditor = ({
 
     // Otherwise, releasing on empty space deselects and sets the playhead time.
     setSelectedActionId(null);
-    if (timelineState.current) timelineState.current.setTime(t);
+    setTimeWithPlaybackCheat(t, { resume: wasPlayingOnPointerDownRef.current });
+    wasPlayingOnPointerDownRef.current = false;
+  };
+
+  const resumeAfterScrubRef = useRef(false);
+  const lastScrubSetAtRef = useRef(0);
+  const pendingScrubTimeRef = useRef<number | null>(null);
+  const scrubFlushRafRef = useRef<number | null>(null);
+  const seekJobIdRef = useRef(0);
+  const wasPlayingOnPointerDownRef = useRef(false);
+  const timeScrubbingRef = useRef<{ pointerId: number } | null>(null);
+
+  /**
+   * Capture-phase pointer down handler to remember whether playback was active.
+   * This runs even if the Timeline component stops propagation for certain regions
+   * (notably the top timecode/header bar).
+   */
+  const handleTimelinePointerDownCapture = (e: React.PointerEvent) => {
+    if (!isMobile) return;
+    if (e.pointerType === 'mouse') return;
+    wasPlayingOnPointerDownRef.current = Boolean(timelineState.current?.isPlaying);
+  };
+
+  /**
+   * Sets the playhead time. If currently playing, temporarily pauses and resumes.
+   * This reduces seek-related stutter on larger files.
+   */
+  const setTimeWithPlaybackCheat = (
+    t: number,
+    opts?: {
+      /** Force resume even if the engine is currently paused. */
+      resume?: boolean;
+      pauseBeforeMs?: number;
+      afterSeekMs?: number;
+      bufferAheadSec?: number;
+      bufferTimeoutMs?: number;
+    }
+  ) => {
+    const state = timelineState.current;
+    if (!state?.setTime) return;
+    const nextTime = Number.isFinite(Number(t)) ? Math.max(0, Number(t)) : 0;
+
+    // Cancel/override any in-flight seek job and only keep the newest.
+    const myJobId = ++seekJobIdRef.current;
+
+    const shouldResume = Boolean(opts?.resume) || Boolean(state.isPlaying);
+
+    const pauseBeforeMs = Math.max(0, Number(opts?.pauseBeforeMs ?? SEEK_PAUSE_BEFORE_MS));
+    const afterSeekMs = Math.max(0, Number(opts?.afterSeekMs ?? SEEK_AFTER_MS));
+    const bufferAheadSec = Math.max(0, Number(opts?.bufferAheadSec ?? SEEK_RESUME_BUFFER_AHEAD_SEC));
+    const bufferTimeoutMs = Math.max(0, Number(opts?.bufferTimeoutMs ?? SEEK_RESUME_BUFFER_TIMEOUT_MS));
+
+    const run = async () => {
+      if (shouldResume) state.pause?.();
+      await delayMs(pauseBeforeMs);
+      if (seekJobIdRef.current !== myJobId) return;
+
+      state.setTime(nextTime);
+      // Some timeline implementations benefit from an explicit reRender to show the frame.
+      state.reRender?.();
+
+      await delayMs(afterSeekMs);
+      if (seekJobIdRef.current !== myJobId) return;
+
+      if (!shouldResume) return;
+
+      // Try to resume only once the active video has buffered a bit.
+      await videoControl.waitForActiveBufferedAhead({
+        minSecondsAhead: bufferAheadSec,
+        timeoutMs: bufferTimeoutMs,
+        pollMs: SEEK_RESUME_BUFFER_POLL_MS,
+      });
+
+      if (seekJobIdRef.current !== myJobId) return;
+
+      try {
+        audioControl.unlock();
+      } catch {
+        // ignore
+      }
+      state.play?.({ autoEnd: true });
+    };
+
+    void run();
   };
 
   return (
@@ -2034,9 +2248,11 @@ const MeliesVideoEditor = ({
             timelineWrapRef.current = node;
             setTimelineDropRef(node);
           }}
+          onPointerDownCapture={handleTimelinePointerDownCapture}
           onPointerDown={handleTimelinePointerDown}
           onPointerMove={handleTimelinePointerMove}
           onPointerUp={handleTimelinePointerUp}
+          onPointerCancel={handleTimelinePointerUp}
         >
           <div className="timeline-zoom-controls" aria-label="Timeline zoom">
             <button
@@ -2155,8 +2371,12 @@ const MeliesVideoEditor = ({
               if (Number.isFinite(st)) setLaneScrollTop(st);
               if (Number.isFinite(sl)) setLaneScrollLeft(sl);
             }}
-            onClickTimeArea={(_time, _e) => {
+            onClickTimeArea={(time, _e) => {
               setSelectedActionId(null);
+              // Click-to-seek (including top timecode/header bar): avoid seeking while engine is ticking.
+              // On mobile, force resume if we were playing at pointer-down.
+              setTimeWithPlaybackCheat(Number(time), { resume: wasPlayingOnPointerDownRef.current });
+              wasPlayingOnPointerDownRef.current = false;
               return undefined;
             }}
             onClickRow={(e) => {
