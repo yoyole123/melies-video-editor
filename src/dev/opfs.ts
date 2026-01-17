@@ -2,15 +2,68 @@ type OpfsRoot = FileSystemDirectoryHandle;
 
 type Maybe<T> = T | null | undefined;
 
-const hasOpfs = () => {
-  return typeof navigator !== 'undefined' && typeof (navigator as any).storage?.getDirectory === 'function';
+type StorageWithGetDirectory = {
+  getDirectory?: () => Promise<OpfsRoot>;
+};
+
+type DirectoryIterable = {
+  values?: () => AsyncIterable<FileSystemHandle>;
+  entries?: () => AsyncIterable<[string, FileSystemHandle]>;
+};
+
+/**
+ * Iterate directory entries with best-effort typing.
+ *
+ * Some TS/lib.dom versions don't type `FileSystemDirectoryHandle.values()` yet.
+ */
+const iterateDirectoryHandles = (dir: FileSystemDirectoryHandle): AsyncIterable<FileSystemHandle> => {
+  const maybeIterable = dir as unknown as DirectoryIterable;
+  if (typeof maybeIterable.values === 'function') return maybeIterable.values();
+
+  if (typeof maybeIterable.entries === 'function') {
+    const entries = maybeIterable.entries;
+    async function* toValues() {
+      for await (const [, handle] of entries.call(dir)) yield handle;
+    }
+    return toValues();
+  }
+
+  throw new Error('Directory iteration not supported in this browser.');
+};
+
+export type OpfsSupport = {
+  supported: boolean;
+  reason?: string;
+};
+
+/**
+ * Best-effort OPFS capability check.
+ *
+ * Notes:
+ * - Many browsers require a secure context (HTTPS); desktop browsers often treat localhost as secure.
+ * - Some mobile browsers may not implement OPFS at all.
+ */
+export const getOpfsSupport = (): OpfsSupport => {
+  const storage = (typeof navigator !== 'undefined' ? (navigator.storage as unknown as StorageWithGetDirectory) : null);
+  const hasApi = Boolean(storage && typeof storage.getDirectory === 'function');
+  if (!hasApi) return { supported: false, reason: 'navigator.storage.getDirectory missing' };
+
+  const isSecure = typeof isSecureContext === 'boolean' ? isSecureContext : true;
+  if (!isSecure) return { supported: false, reason: 'requires a secure context (HTTPS)' };
+
+  return { supported: true };
 };
 
 export const ensureOpfsRoot = async (): Promise<OpfsRoot> => {
-  if (!hasOpfs()) {
-    throw new Error('OPFS not available in this browser (navigator.storage.getDirectory missing).');
+  const support = getOpfsSupport();
+  if (!support.supported) {
+    throw new Error(`OPFS not available: ${support.reason ?? 'unsupported'}.`);
   }
-  return await (navigator as any).storage.getDirectory();
+  const storage = navigator.storage as unknown as StorageWithGetDirectory;
+  if (typeof storage.getDirectory !== 'function') {
+    throw new Error('OPFS not available: navigator.storage.getDirectory missing.');
+  }
+  return await storage.getDirectory();
 };
 
 export const ensureDir = async (root: OpfsRoot, path: string): Promise<FileSystemDirectoryHandle> => {
@@ -47,9 +100,9 @@ export const clearDir = async (opts: {
   dirPath: string;
 }): Promise<void> => {
   const dir = await ensureDir(opts.root, opts.dirPath);
-  for await (const entry of (dir as any).values() as AsyncIterable<FileSystemHandle>) {
+  for await (const entry of iterateDirectoryHandles(dir)) {
     try {
-      await dir.removeEntry((entry as any).name, { recursive: true });
+      await dir.removeEntry(entry.name, { recursive: true });
     } catch {
       // ignore
     }
@@ -62,8 +115,8 @@ export const listFiles = async (opts: {
 }): Promise<FileSystemFileHandle[]> => {
   const dir = await ensureDir(opts.root, opts.dirPath);
   const out: FileSystemFileHandle[] = [];
-  for await (const entry of (dir as any).values() as AsyncIterable<FileSystemHandle>) {
-    if ((entry as any).kind === 'file') out.push(entry as FileSystemFileHandle);
+  for await (const entry of iterateDirectoryHandles(dir)) {
+    if (entry.kind === 'file') out.push(entry as FileSystemFileHandle);
   }
   return out;
 };
