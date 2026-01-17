@@ -16,28 +16,24 @@ export const FOOTAGE_BIN: FootageItem[] = [
     kind: 'video',
     name: 'Big Buck Bunny (10s)',
     src: '/footage/Big_Buck_Bunny_720_10s_5MB.mp4',
-    defaultDuration: 10,
   },
   {
     id: 'example-mp4',
     kind: 'video',
     name: 'Example MP4 (≈10s)',
     src: '/footage/file_example_MP4_1280_10MG.mp4',
-    defaultDuration: 10,
   },
   {
     id: 'example-mp3',
     kind: 'audio',
     name: 'Example MP3 (looped)',
     src: '/footage/file_example_MP3_700KB.mp3',
-    defaultDuration: 10,
   },
   {
     id: 'braveheart',
     kind: 'video',
     name: 'Braveheart (≈13s)',
     src: '/footage/braveheart.mp4',
-    defaultDuration: 10,
   }
 ];
 

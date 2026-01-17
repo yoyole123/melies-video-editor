@@ -11,6 +11,8 @@ class MediaCache {
   private blobUrlBySrc = new Map<string, string>();
   private pendingBySrc = new Map<string, Promise<string>>();
   private metaBySrc = new Map<string, { name?: string; mimeType?: string }>();
+  private durationSecBySrc = new Map<string, number>();
+  private pendingDurationBySrc = new Map<string, Promise<number | null>>();
 
   registerSrcMeta(src: string, meta: { name?: string; mimeType?: string }): void {
     const key = String(src ?? '');
@@ -31,6 +33,124 @@ class MediaCache {
     const key = String(src ?? '');
     if (!key) return undefined;
     return this.metaBySrc.get(key);
+  }
+
+  /** Returns the cached duration (seconds) if known. */
+  getCachedDurationSec(src: string): number | undefined {
+    const key = String(src ?? '');
+    if (!key) return undefined;
+    const value = this.durationSecBySrc.get(key);
+    if (value == null) return undefined;
+    if (!Number.isFinite(value) || value <= 0) return undefined;
+    return value;
+  }
+
+  /**
+   * Attempts to read media duration from browser metadata (seconds).
+   * Returns null when duration cannot be determined (e.g. unsupported/CORS/streaming).
+   */
+  async getDurationSec(src: string, kindHint?: MediaKind): Promise<number | null> {
+    const key = String(src ?? '');
+    if (!key) return null;
+
+    const cached = this.getCachedDurationSec(key);
+    if (cached != null) return cached;
+
+    const pending = this.pendingDurationBySrc.get(key);
+    if (pending) return pending;
+
+    const task = (async () => {
+      const kind = kindHint ?? guessKind(key);
+      if (kind !== 'video' && kind !== 'audio') return null;
+
+      const el: HTMLMediaElement = kind === 'video' ? document.createElement('video') : document.createElement('audio');
+      el.preload = 'metadata';
+      // This can help some browsers fetch metadata without credentials.
+      try {
+        (el as any).crossOrigin = 'anonymous';
+      } catch {
+        // ignore
+      }
+
+      const duration = await new Promise<number | null>((resolve) => {
+        let done = false;
+        let timeoutId: number | null = null;
+
+        const finish = (value: number | null) => {
+          if (done) return;
+          done = true;
+          cleanup();
+          resolve(value);
+        };
+
+        const onLoadedMetadata = () => {
+          const d = Number(el.duration);
+          if (Number.isFinite(d) && d > 0) {
+            finish(d);
+            return;
+          }
+          // Some formats report duration later.
+          queueMicrotask(() => {
+            const d2 = Number(el.duration);
+            finish(Number.isFinite(d2) && d2 > 0 ? d2 : null);
+          });
+        };
+
+        const onDurationChange = () => {
+          const d = Number(el.duration);
+          if (Number.isFinite(d) && d > 0) finish(d);
+        };
+
+        const onError = () => finish(null);
+
+        const cleanup = () => {
+          if (timeoutId != null) {
+            try {
+              window.clearTimeout(timeoutId);
+            } catch {
+              // ignore
+            }
+            timeoutId = null;
+          }
+          el.removeEventListener('loadedmetadata', onLoadedMetadata);
+          el.removeEventListener('durationchange', onDurationChange);
+          el.removeEventListener('error', onError);
+          try {
+            el.src = '';
+            el.load();
+          } catch {
+            // ignore
+          }
+        };
+
+        el.addEventListener('loadedmetadata', onLoadedMetadata);
+        el.addEventListener('durationchange', onDurationChange);
+        el.addEventListener('error', onError);
+
+        // Timeout: metadata should be quick; fall back if it isn't.
+        const timeoutMs = 4000;
+        timeoutId = window.setTimeout(() => finish(null), timeoutMs);
+
+        el.src = key;
+      });
+
+      if (duration != null && Number.isFinite(duration) && duration > 0) {
+        this.durationSecBySrc.set(key, duration);
+        return duration;
+      }
+
+      return null;
+    })()
+      .catch((err) => {
+        console.warn('[mediaCache] duration probe failed:', key, err);
+        return null;
+      })
+      .finally(() => {
+        this.pendingDurationBySrc.delete(key);
+      });
+
+    this.pendingDurationBySrc.set(key, task);
+    return task;
   }
 
   /**

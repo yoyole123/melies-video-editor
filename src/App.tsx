@@ -43,6 +43,7 @@ const MAX_HISTORY = 5;
 // at clip boundaries (playback logic uses exclusive end).
 const TIME_QUANTUM_SEC = 0.001; // 1ms
 const MIN_ACTION_DURATION_SEC = 0.01;
+const FALLBACK_CLIP_DURATION_SEC = 10;
 const MICRO_GAP_MAX_SEC = 0.03; // collapse only very small gaps (rounding/precision), not intentional spacing
 
 // Playback cheat tuning (mobile-first): pause, let decoding settle, seek, then resume.
@@ -70,6 +71,28 @@ const delayMs = (ms: number) =>
   new Promise<void>((resolve) => {
     setTimeout(() => resolve(), Math.max(0, ms));
   });
+
+/**
+ * Resolve clip duration in seconds.
+ * Prefers real media metadata (video/audio duration) and falls back only when unavailable.
+ */
+const resolveClipDurationSec = async (item: {
+  kind: 'video' | 'audio';
+  src: string;
+  defaultDuration?: number;
+}): Promise<number> => {
+  const fromMeta = await mediaCache.getDurationSec(item.src, item.kind);
+  if (fromMeta != null && Number.isFinite(fromMeta) && fromMeta > 0) {
+    return Math.max(MIN_ACTION_DURATION_SEC, fromMeta);
+  }
+
+  const fromDefault = Number(item.defaultDuration);
+  if (Number.isFinite(fromDefault) && fromDefault > 0) {
+    return Math.max(MIN_ACTION_DURATION_SEC, fromDefault);
+  }
+
+  return FALLBACK_CLIP_DURATION_SEC;
+};
 
 const quantizeTimeSec = (t: number) => {
   const n = Number(t);
@@ -275,7 +298,6 @@ const MeliesVideoEditor = ({
       kind: inferFootageKindFromUrl(src),
       name: nameFromUrl(src, index),
       src,
-      defaultDuration: 10,
     }));
   }, [footageUrls]);
 
@@ -299,7 +321,6 @@ const MeliesVideoEditor = ({
         kind: inferFootageKindFromFile(file),
         name: file.name || `Footage ${index + 1}`,
         src: url,
-        defaultDuration: 10,
       };
     });
 
@@ -341,7 +362,6 @@ const MeliesVideoEditor = ({
             kind: inferFootageKindFromFile(file),
             name: file.name || handle?.name || `Footage ${index + 1}`,
             src: url,
-            defaultDuration: 10,
           });
         } catch (err) {
           console.warn('[MeliesVideoEditor] Failed to load file handle', err);
@@ -368,6 +388,13 @@ const MeliesVideoEditor = ({
   const footageBin = useMemo<FootageItem[]>(() => {
     return [...urlFootageBin, ...fileFootageBin, ...handleFootageBin];
   }, [urlFootageBin, fileFootageBin, handleFootageBin]);
+
+  // Warm media duration metadata so drag previews and auto-place can use real lengths quickly.
+  useEffect(() => {
+    for (const item of footageBin) {
+      void mediaCache.getDurationSec(item.src, item.kind);
+    }
+  }, [footageBin]);
 
   const [activeFootage, setActiveFootage] = useState<FootageItem | null>(null);
   const [activeFootageSize, setActiveFootageSize] = useState<{ width: number; height: number } | null>(null);
@@ -462,66 +489,78 @@ const MeliesVideoEditor = ({
     const targetVideoRow = VIDEO_ROW_INDEXES[0];
     const targetAudioRow = pairedAudioRowForVideoRow(targetVideoRow);
 
-    const next = createEmptyEditorData();
-    let t = 0;
-    for (const item of footageBin) {
-      const duration = Math.max(0.01, Number(item.defaultDuration ?? 10));
-      const start = quantizeTimeSec(t);
-      const end = quantizeTimeSec(t + duration);
-      t = end;
-
-      if (item.kind === 'video') {
-        const linkId = `link-${uid()}`;
-        // videoLayer: higher number = visually higher track. Compute based on VIDEO_ROW_INDEXES mapping.
-        const layerForTarget = VIDEO_ROW_INDEXES.findIndex((x) => x === targetVideoRow);
-        next[targetVideoRow].actions.push({
-          id: `video-${uid()}`,
-          start,
-          end,
-          effectId: 'effect1',
-          data: {
-            src: item.src,
-            previewSrc: item.previewSrc,
-            name: item.name,
-            linkId,
-            videoLayer: layerForTarget,
-          },
-        } as CustomTimelineAction);
-
-        next[targetAudioRow].actions.push({
-          id: `video-audio-${uid()}`,
-          start,
-          end,
-          effectId: 'effect2',
-          data: {
-            src: item.src,
-            name: item.name,
-            linkId,
-          },
-        } as CustomTimelineAction);
-      } else {
-        next[targetAudioRow].actions.push({
-          id: `audio-${uid()}`,
-          start,
-          end,
-          effectId: 'effect0',
-          data: {
-            src: item.src,
-            name: item.name,
-          },
-        } as CustomTimelineAction);
-      }
-    }
-
-    setSelectedActionId(null);
-    setPast([]);
-    setFuture([]);
-    setData(() => {
-      dataRef.current = next;
-      return next;
-    });
-
     hasAutoPlacedFootageRef.current = true;
+
+    let cancelled = false;
+
+    const run = async () => {
+      const next = createEmptyEditorData();
+      let t = 0;
+
+      for (const item of footageBin) {
+        if (cancelled) return;
+        const duration = await resolveClipDurationSec(item);
+        const start = quantizeTimeSec(t);
+        const end = quantizeTimeSec(t + duration);
+        t = end;
+
+        if (item.kind === 'video') {
+          const linkId = `link-${uid()}`;
+          // videoLayer: higher number = visually higher track. Compute based on VIDEO_ROW_INDEXES mapping.
+          const layerForTarget = VIDEO_ROW_INDEXES.findIndex((x) => x === targetVideoRow);
+          next[targetVideoRow].actions.push({
+            id: `video-${uid()}`,
+            start,
+            end,
+            effectId: 'effect1',
+            data: {
+              src: item.src,
+              previewSrc: item.previewSrc,
+              name: item.name,
+              linkId,
+              videoLayer: layerForTarget,
+            },
+          } as CustomTimelineAction);
+
+          next[targetAudioRow].actions.push({
+            id: `video-audio-${uid()}`,
+            start,
+            end,
+            effectId: 'effect2',
+            data: {
+              src: item.src,
+              name: item.name,
+              linkId,
+            },
+          } as CustomTimelineAction);
+        } else {
+          next[targetAudioRow].actions.push({
+            id: `audio-${uid()}`,
+            start,
+            end,
+            effectId: 'effect0',
+            data: {
+              src: item.src,
+              name: item.name,
+            },
+          } as CustomTimelineAction);
+        }
+      }
+
+      setSelectedActionId(null);
+      setPast([]);
+      setFuture([]);
+      setData(() => {
+        dataRef.current = next;
+        return next;
+      });
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
   }, [autoPlaceFootage, footageBin]);
 
   // Preload media referenced by timeline actions to reduce buffering/stalls during playback.
@@ -1010,12 +1049,12 @@ const MeliesVideoEditor = ({
     return { start: Math.max(0, start), end, snapped: true };
   };
 
-  const insertActionAtTime = (
+  const insertActionAtTime = async (
     item: { kind: 'video' | 'audio'; src: string; previewSrc?: string; name: string; defaultDuration?: number },
     at: number,
     targetRowIndex?: number | null
   ) => {
-    const duration = item.defaultDuration ?? 10;
+    const duration = await resolveClipDurationSec(item);
     let start = Math.max(0, quantizeTimeSec(at));
     let end = quantizeTimeSec(start + duration);
 
@@ -1140,7 +1179,7 @@ const MeliesVideoEditor = ({
     laneRowIndex: number,
     rows: CusTomTimelineRow[]
   ): number => {
-    const duration = item.defaultDuration ?? 10;
+    const duration = mediaCache.getCachedDurationSec(item.src) ?? item.defaultDuration ?? FALLBACK_CLIP_DURATION_SEC;
     let start = Math.max(0, quantizeTimeSec(desiredStart));
     let end = quantizeTimeSec(start + duration);
 
@@ -1832,7 +1871,7 @@ const MeliesVideoEditor = ({
       const dropRowIndex = rowIndexFromClientY(pt.y);
       const laneRowIndex = pickLaneForItem(item, dropRowIndex);
       setHoveredDropRowIndex(laneRowIndex);
-      insertActionAtTime(item, Math.max(0, dropTime), laneRowIndex);
+      void insertActionAtTime(item, Math.max(0, dropTime), laneRowIndex);
     }
 
     setActiveFootage(null);
@@ -1862,7 +1901,8 @@ const MeliesVideoEditor = ({
     if (laneRow == null) return null;
     const desiredStart = timeFromClientX(pt.x);
     const bumpedStart = computeBumpedStart(activeFootage, desiredStart, laneRow, dataRef.current);
-    const duration = activeFootage.defaultDuration ?? 10;
+    const duration =
+      mediaCache.getCachedDurationSec(activeFootage.src) ?? activeFootage.defaultDuration ?? FALLBACK_CLIP_DURATION_SEC;
     return {
       laneRow,
       desiredStart,
