@@ -55,6 +55,11 @@ const SEEK_RESUME_BUFFER_POLL_MS = 100;
 // While scrubbing/dragging, update preview at most ~4fps.
 const SCRUB_SET_TIME_MIN_INTERVAL_MS = 500;
 
+// Forward seeks often require more buffering than backward seeks.
+// Apply a multiplier to the post-seek settle/buffer window when jumping into the future.
+const FORWARD_SEEK_MULTIPLIER = 4;
+const FORWARD_SEEK_EPSILON_SEC = 0.05;
+
 // When the user releases a drag-scrub, we want noticeably more buffer before resuming.
 const SEEK_AFTER_SCRUB_MS = 360;
 const SEEK_RESUME_BUFFER_AHEAD_SCRUB_SEC = 0.9;
@@ -2068,6 +2073,7 @@ const MeliesVideoEditor = ({
   const timeAreaPointerRef = useRef<{ pointerId: number } | null>(null);
   const skipNextTimeAreaClickRef = useRef(false);
   const pendingHeaderResumeRef = useRef(false);
+  const headerPointerDownTimeRef = useRef<number | null>(null);
   const ignoreNextAfterSetTimeRef = useRef(false);
   const resumeJobIdRef = useRef(0);
 
@@ -2097,6 +2103,7 @@ const MeliesVideoEditor = ({
 
       if (isTimeArea && wasPlaying) {
         pendingHeaderResumeRef.current = true;
+        headerPointerDownTimeRef.current = Number(timelineState.current?.getTime?.());
       }
 
       if (isMobile && event.pointerType !== 'mouse' && isTimeArea && Number.isFinite(event.pointerId)) {
@@ -2160,20 +2167,34 @@ const MeliesVideoEditor = ({
         if (!pendingHeaderResumeRef.current) return;
         pendingHeaderResumeRef.current = false;
 
+        const beforeRaw = headerPointerDownTimeRef.current;
+        headerPointerDownTimeRef.current = null;
+        const after = Number(timelineState.current?.getTime?.());
+        const isForwardSeek =
+          beforeRaw != null &&
+          Number.isFinite(beforeRaw) &&
+          Number.isFinite(after) &&
+          after > beforeRaw + FORWARD_SEEK_EPSILON_SEC;
+        const forwardMultiplier = isForwardSeek ? FORWARD_SEEK_MULTIPLIER : 1;
+        const pauseBeforeMs = SEEK_PAUSE_BEFORE_MS;
+        const afterSeekMs = SEEK_AFTER_MS * forwardMultiplier;
+        const bufferAheadSec = SEEK_RESUME_BUFFER_AHEAD_SEC * (forwardMultiplier > 1 ? 1.25 : 1);
+        const bufferTimeoutMs = SEEK_RESUME_BUFFER_TIMEOUT_MS * forwardMultiplier;
+
         const myJobId = ++resumeJobIdRef.current;
         const run = async () => {
           const state = timelineState.current;
           if (!state) return;
 
           state.pause?.();
-          await delayMs(SEEK_PAUSE_BEFORE_MS);
+          await delayMs(pauseBeforeMs);
           if (resumeJobIdRef.current !== myJobId) return;
-          await delayMs(SEEK_AFTER_MS);
+          await delayMs(afterSeekMs);
           if (resumeJobIdRef.current !== myJobId) return;
 
           await videoControl.waitForActiveBufferedAhead({
-            minSecondsAhead: SEEK_RESUME_BUFFER_AHEAD_SEC,
-            timeoutMs: SEEK_RESUME_BUFFER_TIMEOUT_MS,
+            minSecondsAhead: bufferAheadSec,
+            timeoutMs: bufferTimeoutMs,
             pollMs: SEEK_RESUME_BUFFER_POLL_MS,
           });
 
@@ -2213,6 +2234,8 @@ const MeliesVideoEditor = ({
       afterSeekMs?: number;
       bufferAheadSec?: number;
       bufferTimeoutMs?: number;
+      /** If false, disables forward-seek boosting. */
+      enableForwardBoost?: boolean;
     }
   ) => {
     const state = timelineState.current;
@@ -2224,10 +2247,20 @@ const MeliesVideoEditor = ({
 
     const shouldResume = Boolean(opts?.resume) || Boolean(state.isPlaying);
 
+    const currentTime = Number(state.getTime?.());
+    const isForwardSeek =
+      Number.isFinite(currentTime) && nextTime > currentTime + FORWARD_SEEK_EPSILON_SEC;
+    const forwardMultiplier =
+      (opts?.enableForwardBoost ?? true) && shouldResume && isForwardSeek ? FORWARD_SEEK_MULTIPLIER : 1;
+
     const pauseBeforeMs = Math.max(0, Number(opts?.pauseBeforeMs ?? SEEK_PAUSE_BEFORE_MS));
-    const afterSeekMs = Math.max(0, Number(opts?.afterSeekMs ?? SEEK_AFTER_MS));
-    const bufferAheadSec = Math.max(0, Number(opts?.bufferAheadSec ?? SEEK_RESUME_BUFFER_AHEAD_SEC));
-    const bufferTimeoutMs = Math.max(0, Number(opts?.bufferTimeoutMs ?? SEEK_RESUME_BUFFER_TIMEOUT_MS));
+    const afterSeekMs =
+      Math.max(0, Number(opts?.afterSeekMs ?? SEEK_AFTER_MS)) * forwardMultiplier;
+    const bufferAheadSec =
+      Math.max(0, Number(opts?.bufferAheadSec ?? SEEK_RESUME_BUFFER_AHEAD_SEC)) *
+      (forwardMultiplier > 1 ? 1.25 : 1);
+    const bufferTimeoutMs =
+      Math.max(0, Number(opts?.bufferTimeoutMs ?? SEEK_RESUME_BUFFER_TIMEOUT_MS)) * forwardMultiplier;
 
     const run = async () => {
       if (shouldResume) state.pause?.();
