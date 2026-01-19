@@ -407,7 +407,7 @@ const MeliesVideoEditor = ({
   const [dragClient, setDragClient] = useState<{ x: number; y: number } | null>(null);
   const lastDragClientRef = useRef<{ x: number; y: number } | null>(null);
   const dragStartClientRef = useRef<{ x: number; y: number } | null>(null);
-  const timelinePointerDownRef = useRef<{ x: number; y: number } | null>(null);
+  const timelinePointerDownRef = useRef<{ x: number; y: number; isAction: boolean } | null>(null);
   const cursorDraggingRef = useRef<{ pointerId: number } | null>(null);
 
   const ROW_HEIGHT_PX = isMobile ? 48 : 32;
@@ -2025,7 +2025,8 @@ const MeliesVideoEditor = ({
     // Only treat touch/pen as mobile gesture; mouse keeps desktop behavior.
     if (e.pointerType === 'mouse') return;
 
-    timelinePointerDownRef.current = { x: e.clientX, y: e.clientY };
+    const isActionHit = Boolean(target?.closest?.('.timeline-editor-action, [data-action-id]'));
+    timelinePointerDownRef.current = { x: e.clientX, y: e.clientY, isAction: isActionHit };
   };
 
   const handleTimelinePointerMove = (e: React.PointerEvent) => {
@@ -2064,6 +2065,7 @@ const MeliesVideoEditor = ({
     // We treat horizontal drags as a scrub gesture.
     const start = timelinePointerDownRef.current;
     if (!start) return;
+    if (start.isAction) return;
 
     const dx = Math.abs(e.clientX - start.x);
     const dy = Math.abs(e.clientY - start.y);
