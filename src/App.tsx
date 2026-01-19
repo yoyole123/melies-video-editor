@@ -637,8 +637,6 @@ const MeliesVideoEditor = ({
   const pendingGestureActionIdRef = useRef<string | null>(null);
 
   // Cursor magnet: snap when close, but release easily if the user keeps dragging.
-  const CURSOR_SNAP_THRESHOLD_SEC = 0.9;
-  const CURSOR_SNAP_RELEASE_SEC = 1.05;
   const snapStateRef = useRef<{
     actionId: string | null;
     edge: 'start' | 'end' | null;
@@ -1003,78 +1001,122 @@ const MeliesVideoEditor = ({
     return Number.isFinite(t) ? Math.max(0, t) : 0;
   };
 
+  const getSnapPoints = (excludeActionId: string) => {
+    const points: number[] = [getCursorTime()];
+    const linked = excludeActionId ? findLinkedPartner(dataRef.current, excludeActionId) : null;
+    const excludeIds = new Set([excludeActionId, linked?.action.id].filter(Boolean));
+
+    for (const row of dataRef.current) {
+      for (const action of row.actions) {
+         if (excludeIds.has(String(action.id))) continue;
+         const start = Number((action as any).start);
+         const end = Number((action as any).end);
+         if (Number.isFinite(start)) points.push(start);
+         if (Number.isFinite(end)) points.push(end);
+      }
+    }
+    return points;
+  };
+
   const maybeSnapToCursorForMove = (actionId: string, nextStart: number, nextEnd: number) => {
-    const cursorTime = getCursorTime();
     const duration = nextEnd - nextStart;
     if (!Number.isFinite(duration) || duration <= 0) {
       return { start: nextStart, end: nextEnd, snapped: false, edge: null as any };
     }
 
-    const distStart = Math.abs(nextStart - cursorTime);
-    const distEnd = Math.abs(nextEnd - cursorTime);
-    const closerEdge: 'start' | 'end' = distStart <= distEnd ? 'start' : 'end';
-    const minDist = Math.min(distStart, distEnd);
+    const points = getSnapPoints(actionId);
+    
+    // Dynamic threshold based on zoom
+    const pxPerSec = timelineScaleWidth / timelineScale;
+    const snapThresholdSec = 20 / pxPerSec; 
+    const snapReleaseSec = 40 / pxPerSec;
+
+    let closestDistStart = Infinity;
+    let closestPointStart = -1;
+    let closestDistEnd = Infinity;
+    let closestPointEnd = -1;
+
+    for (const p of points) {
+        const dS = Math.abs(nextStart - p);
+        if (dS < closestDistStart) { closestDistStart = dS; closestPointStart = p; }
+        const dE = Math.abs(nextEnd - p);
+        if (dE < closestDistEnd) { closestDistEnd = dE; closestPointEnd = p; }
+    }
+
+    const closerEdge: 'start' | 'end' = closestDistStart <= closestDistEnd ? 'start' : 'end';
+    const minDist = Math.min(closestDistStart, closestDistEnd);
 
     const snapState = snapStateRef.current;
     const isSameAction = snapState.actionId === actionId;
     const isSnapped = isSameAction && snapState.edge != null;
 
-    if (!isSnapped) {
-      if (minDist > CURSOR_SNAP_THRESHOLD_SEC) {
-        return { start: nextStart, end: nextEnd, snapped: false, edge: null as any };
-      }
+    if (minDist <= snapThresholdSec) {
       snapStateRef.current = { actionId, edge: closerEdge };
-    } else {
+    } else if (isSnapped) {
       const edge = snapState.edge;
-      const dist = edge === 'start' ? distStart : distEnd;
-      if (dist > CURSOR_SNAP_RELEASE_SEC) {
+      const dist = edge === 'start' ? closestDistStart : closestDistEnd;
+      if (dist > snapReleaseSec) {
         snapStateRef.current = { actionId, edge: null };
         return { start: nextStart, end: nextEnd, snapped: false, edge: null as any };
       }
+    } else {
+      return { start: nextStart, end: nextEnd, snapped: false, edge: null as any };
     }
 
     const edge = snapStateRef.current.edge as 'start' | 'end';
     if (edge === 'start') {
-      const start = cursorTime;
+      const start = closestPointStart;
       const end = start + duration;
       return { start: Math.max(0, start), end: Math.max(Math.max(0, start), end), snapped: true, edge };
     }
 
-    const end = cursorTime;
+    const end = closestPointEnd;
     const start = end - duration;
     return { start: Math.max(0, start), end: Math.max(0, end), snapped: true, edge };
   };
 
   const maybeSnapToCursorForResize = (actionId: string, nextStart: number, nextEnd: number, dir: 'left' | 'right') => {
-    const cursorTime = getCursorTime();
+    const points = getSnapPoints(actionId);
+
+    const pxPerSec = timelineScaleWidth / timelineScale;
+    const snapThresholdSec = 20 / pxPerSec; 
+    const snapReleaseSec = 40 / pxPerSec;
+
     const snapEdge: 'start' | 'end' = dir === 'left' ? 'start' : 'end';
-    const dist = snapEdge === 'start' ? Math.abs(nextStart - cursorTime) : Math.abs(nextEnd - cursorTime);
+    
+    let closestDist = Infinity;
+    let closestPoint = -1;
+    const checkVal = snapEdge === 'start' ? nextStart : nextEnd;
+
+    for (const p of points) {
+        const d = Math.abs(checkVal - p);
+        if (d < closestDist) { closestDist = d; closestPoint = p; }
+    }
 
     const snapState = snapStateRef.current;
     const isSameAction = snapState.actionId === actionId;
     const isSnapped = isSameAction && snapState.edge === snapEdge;
 
-    if (!isSnapped) {
-      if (dist > CURSOR_SNAP_THRESHOLD_SEC) {
-        return { start: nextStart, end: nextEnd, snapped: false };
-      }
+    if (closestDist <= snapThresholdSec) {
       snapStateRef.current = { actionId, edge: snapEdge };
-    } else {
-      if (dist > CURSOR_SNAP_RELEASE_SEC) {
+    } else if (isSnapped) {
+      if (closestDist > snapReleaseSec) {
         snapStateRef.current = { actionId, edge: null };
         return { start: nextStart, end: nextEnd, snapped: false };
       }
+    } else {
+      return { start: nextStart, end: nextEnd, snapped: false };
     }
 
     if (snapEdge === 'start') {
-      const start = Math.max(0, cursorTime);
+      const start = Math.max(0, closestPoint);
       const end = Math.max(start + 0.01, nextEnd);
       return { start, end, snapped: true };
     }
 
-    const end = Math.max(0, cursorTime);
+    const end = Math.max(0, closestPoint);
     const start = Math.min(nextStart, end - 0.01);
-    return { start: Math.max(0, start), end, snapped: true };
+    return { start: Math.max(0, start), end: Math.max(0, end), snapped: true, edge };
   };
 
   const insertActionAtTime = async (
