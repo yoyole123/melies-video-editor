@@ -65,12 +65,20 @@ class AudioControl {
     if (this.howlBySrc[cacheKey]) return this.howlBySrc[cacheKey];
 
     const format = inferHowlerFormatForSrc(src) ?? inferHowlerFormatForSrc(resolved);
+    
+    // Mobile/Video fix:
+    // Large video files (MP4) often fail to decode via WebAudio on mobile (memory limits).
+    // Use HTML5 streaming for these.
+    const meta = mediaCache.getSrcMeta(src);
+    const isVideo = format === 'mp4' || meta?.mimeType?.startsWith('video/');
+
     const howl = new Howl({
       src: [urlForHowler],
       format: format ? [format] : undefined,
       loop: true,
       autoplay: false,
       preload: true,
+      html5: isVideo, // Force HTML5 Audio for video files to avoid WebAudio decode failures
     });
     this.howlBySrc[cacheKey] = howl;
     return howl;
@@ -143,27 +151,79 @@ class AudioControl {
     const howl = this.getHowl(src);
     const soundId = howl.play();
     howl.rate(engine.getPlayRate(), soundId);
+    
+    // Attempt immediate seek (works for WebAudio and cached HTML5)
     this.seekForEngineTime(howl, soundId, startTime, time, offsetSeconds);
+
+    // Fix for HTML5 streaming (video/mobile): 
+    // Immediate seek often fails if metadata isn't ready or playback hasn't started.
+    // We retry the seek once we get 'load' or 'play' events to ensure correct start position.
+    // We bind to the specific soundId to avoid affecting other instances.
+    const retrySeek = () => {
+       // Only seek if this specific sound instance is still relevant/active
+       if (this.activeByActionId[actionId]?.soundId === soundId) {
+          // Use current 'time' from closure?? NO. 'time' is the initial start param.
+          // Ideally we should use the engine time if available, but for the "start" fix, 
+          // enforcing the *original* intended start position is usually correct 
+          // because the engine hasn't advanced far in the few ms it takes to load.
+          this.seekForEngineTime(howl, soundId, startTime, time, offsetSeconds);
+       }
+    };
+
+    if (howl.state() !== 'loaded') {
+      howl.once('load', retrySeek, soundId);
+    }
+    // Always attach play listener (even if playing check passes, it might be in-between states)
+    // But 'once' is safe.
+    howl.once('play', retrySeek, soundId);
 
     let lastResyncAtMs = performance.now();
 
     const timeListener = ({ time }: { time: number }) => {
-      // When the timeline time is explicitly set (e.g. user drags/clicks cursor), we want
-      // audio to jump immediately, even during playback.
-      //
-      // We still keep a light throttle for normal playback-driven updates to avoid
-      // over-seeking (which can cause stutters on some browsers).
-      const now = performance.now();
+      // While playing, avoid seeking every frame (it can cause silence/stuttering).
+      // Instead, occasionally re-sync if drift becomes noticeable.
       if (!engine.isPlaying) {
         this.seekForEngineTime(howl, soundId, startTime, time, offsetSeconds);
         return;
       }
 
-      // If time updates arrive frequently during playback, avoid seeking too often.
-      if (now - lastResyncAtMs < 120) return;
+      const now = performance.now();
+      // Faster polling for mobile sync (was 500)
+      if (now - lastResyncAtMs < 200) return;
       lastResyncAtMs = now;
 
-      this.seekForEngineTime(howl, soundId, startTime, time, offsetSeconds);
+      try {
+        const expected = Math.max(0, time - startTime + offsetSeconds);
+        const currentPos = Number(howl.seek(soundId));
+        
+        if (Number.isFinite(currentPos)) {
+          const drift = currentPos - expected;
+          const absDrift = Math.abs(drift);
+          const baseRate = engine.getPlayRate();
+
+          // Large drift (> 300ms): Hard seek (failsafe)
+          if (absDrift > 0.3) {
+            this.seekForEngineTime(howl, soundId, startTime, time, offsetSeconds);
+            howl.rate(baseRate, soundId); // Reset rate after seek
+            return;
+          }
+
+          // Small drift (> 40ms): Nudge rate (Soft Sync)
+          // If audio is ahead (drift > 0), slow down. If behind (drift < 0), speed up.
+          if (absDrift > 0.04) {
+            const nudge = drift > 0 ? 0.95 : 1.05;
+            howl.rate(baseRate * nudge, soundId);
+          } else {
+            // In sync: ensure rate is normal
+            // (Only reset if needed, but Howler getter is expensive? Just set it to be safe)
+            if (howl.rate(soundId) !== baseRate) {
+              howl.rate(baseRate, soundId);
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
     };
     const rateListener = ({ rate }: { rate: number }) => {
       howl.rate(rate, soundId);
