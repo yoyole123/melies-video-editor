@@ -567,6 +567,34 @@ const MeliesVideoEditor = ({
   // This is intentionally fire-and-forget; cache dedupes across edits.
   useEffect(() => {
     mediaCache.warmFromEditorData(data);
+
+    // Also warm up audio instances (Howler) and video buffers explicitly.
+    // This allows immediate playback without waiting for initial decode on play.
+    const audioSrcs = new Set<string>();
+    const videoSrcs = new Set<string>();
+
+    for (const row of data) {
+      const actions = row.actions as CustomTimelineAction[];
+      for (const action of actions) {
+        if (action.effectId === 'effect0' || action.effectId === 'effect2') {
+          const src = action.data?.src;
+          if (src) audioSrcs.add(src);
+        }
+        if (action.effectId === 'effect1') {
+          const d = action.data;
+          const s = d?.previewSrc || d?.src;
+          if (s) videoSrcs.add(s);
+        }
+      }
+    }
+
+    for (const src of audioSrcs) {
+      audioControl.warm(src);
+    }
+
+    for (const src of videoSrcs) {
+      videoControl.warm(src);
+    }
   }, [data]);
 
   useEffect(() => {
