@@ -1,6 +1,6 @@
 import { Timeline } from '@xzdarcy/react-timeline-editor';
 import type { TimelineState } from '@xzdarcy/react-timeline-editor';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CustomRender0, CustomRender1, CustomRender2 } from './custom';
 import './index.less';
 import { mockEffect, scale, scaleWidth } from './mock';
@@ -262,6 +262,55 @@ export type MeliesVideoEditorProps = {
    * Defaults to false.
    */
   autoPlaceFootage?: boolean;
+
+  /**
+   * Optional initial timeline snapshot (e.g. loaded from your DB).
+   *
+   * Note: if you store `blob:` URLs in the snapshot, they will not be valid across sessions.
+   * Prefer storing stable asset ids and rehydrating to playable URLs before loading.
+   */
+  initialTimelineSnapshot?: MeliesTimelineSnapshot;
+
+  /**
+   * Called whenever timeline state changes.
+   *
+   * Consumers should debounce/throttle this callback when persisting to a DB.
+   */
+  onTimelineStateChange?: (snapshot: MeliesTimelineSnapshot) => void;
+};
+
+export type MeliesTimelineSnapshot = {
+  /** Bump this when snapshot schema changes. */
+  version: 1;
+  /** Timeline rows/actions data (seconds). */
+  editorData: CusTomTimelineRow[];
+  /** UI selection (optional to restore). */
+  selectedActionId: string | null;
+  /** UI zoom (optional to restore). */
+  timelineScaleWidth: number;
+};
+
+export type MeliesVideoEditorRef = {
+  /**
+   * Get a deep-cloned snapshot of the current timeline state.
+   * Safe to store/mutate externally.
+   */
+  getTimelineSnapshot: () => MeliesTimelineSnapshot;
+
+  /**
+   * Load a snapshot into the editor.
+   * Resets undo/redo history.
+   */
+  setTimelineSnapshot: (snapshot: MeliesTimelineSnapshot) => void;
+};
+
+const cloneSerializable = <T,>(value: T): T => {
+  // Prefer structuredClone (fast + handles more types), but fall back to JSON for older runtimes.
+  try {
+    return structuredClone(value);
+  } catch {
+    return JSON.parse(JSON.stringify(value)) as T;
+  }
 };
 
 const inferFootageKindFromUrl = (url: string): FootageItem['kind'] => {
@@ -287,12 +336,17 @@ const inferFootageKindFromFile = (file: File): FootageItem['kind'] => {
   return inferFootageKindFromUrl(file?.name ?? '');
 };
 
-const MeliesVideoEditor = ({
-  footageUrls,
-  footageFiles,
-  footageFileHandles,
-  autoPlaceFootage = false,
-}: MeliesVideoEditorProps) => {
+const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProps>(function MeliesVideoEditor(
+  {
+    footageUrls,
+    footageFiles,
+    footageFileHandles,
+    autoPlaceFootage = false,
+    initialTimelineSnapshot,
+    onTimelineStateChange,
+  }: MeliesVideoEditorProps,
+  ref
+) {
   const [data, setData] = useState<CusTomTimelineRow[]>(() => createEmptyEditorData());
   const [selectedActionId, setSelectedActionId] = useState<string | null>(null);
   const [past, setPast] = useState<CusTomTimelineRow[][]>([]);
@@ -457,10 +511,113 @@ const MeliesVideoEditor = ({
   const [timelineScaleWidth, setTimelineScaleWidth] = useState(() => scaleWidth);
   const timelineScale = scale;
 
+  /** Build a stable, serializable snapshot of the current editor state. */
+  const getTimelineSnapshot = (): MeliesTimelineSnapshot => {
+    const editorData = cloneSerializable(dataRef.current);
+    return {
+      version: 1,
+      editorData,
+      selectedActionId,
+      timelineScaleWidth,
+    };
+  };
+
+  /** Load a snapshot into the editor, resetting undo/redo history. */
+  const setTimelineSnapshot = (snapshot: MeliesTimelineSnapshot) => {
+    if (!snapshot || snapshot.version !== 1) {
+      throw new Error('[MeliesVideoEditor] Unsupported snapshot version');
+    }
+
+    // Pause playback before applying state to avoid engine/scrub mismatch.
+    try {
+      if (timelineState.current?.isPlaying) timelineState.current.pause();
+    } catch {
+      // ignore
+    }
+
+    const nextRows = quantizeEditorData(cloneSerializable(snapshot.editorData ?? createEmptyEditorData()));
+    const nextSelected = snapshot.selectedActionId ?? null;
+    const nextScaleWidth = Number(snapshot.timelineScaleWidth);
+
+    setSelectedActionId(nextSelected);
+    setPast([]);
+    setFuture([]);
+
+    if (Number.isFinite(nextScaleWidth) && nextScaleWidth > 0) {
+      setTimelineScaleWidth(Math.min(600, Math.max(60, Math.round(nextScaleWidth))));
+    }
+
+    setData(() => {
+      dataRef.current = nextRows;
+      return nextRows;
+    });
+  };
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      getTimelineSnapshot,
+      setTimelineSnapshot,
+    }),
+    // Depend on view state that is included in snapshot.
+    [selectedActionId, timelineScaleWidth]
+  );
+
+  // Optional "push" export for auto-save.
+  useEffect(() => {
+    if (!onTimelineStateChange) return;
+    onTimelineStateChange(getTimelineSnapshot());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, selectedActionId, timelineScaleWidth, onTimelineStateChange]);
+
+  // Optional "pull" import on mount / when the prop changes.
+  const lastInitialSnapshotJsonRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!initialTimelineSnapshot) return;
+    let json: string;
+    try {
+      json = JSON.stringify(initialTimelineSnapshot);
+    } catch {
+      // If it isn't serializable, avoid repeated crashes.
+      return;
+    }
+
+    if (lastInitialSnapshotJsonRef.current === json) return;
+    lastInitialSnapshotJsonRef.current = json;
+
+    try {
+      setTimelineSnapshot(initialTimelineSnapshot);
+    } catch (err) {
+      console.warn('[MeliesVideoEditor] Failed to apply initialTimelineSnapshot', err);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTimelineSnapshot]);
+
   const zoomByFactor = (factor: number) => {
     setTimelineScaleWidth((prev) => {
       const next = Math.round(prev * factor);
-      return Math.min(600, Math.max(60, next));
+      const clamped = Math.min(600, Math.max(60, next));
+
+      // Keep the playhead anchored visually when zooming, if we have engine + scroll state.
+      const state = timelineState.current;
+      if (state) {
+        const t = getCursorTime();
+        const prevPxPerSec = prev / timelineScale;
+        const nextPxPerSec = clamped / timelineScale;
+        const playheadAbsXPrev = TIMELINE_LEFT_GUTTER_PX + t * prevPxPerSec;
+        const playheadViewX = playheadAbsXPrev - laneScrollLeft;
+        const playheadAbsXNext = TIMELINE_LEFT_GUTTER_PX + t * nextPxPerSec;
+        const nextScrollLeft = Math.max(0, playheadAbsXNext - playheadViewX);
+
+        // Defer until after React has committed the new scaleWidth.
+        requestAnimationFrame(() => {
+          if (timelineState.current) {
+            timelineState.current.setScrollLeft(nextScrollLeft);
+          }
+        });
+      }
+
+      return clamped;
     });
   };
 
@@ -3326,5 +3483,5 @@ const MeliesVideoEditor = ({
       </div>
     </DndContext>
   );
-};
+});
 export default MeliesVideoEditor;

@@ -52,6 +52,7 @@ const TimelinePlayer = ({
   const lastSplitAt = useRef(0);
   const lastUndoAt = useRef(0);
   const lastRedoAt = useRef(0);
+  const scrollContainerRef = useRef<HTMLElement | null>(null);
 
   const debugVideoEnabled = () => {
     try {
@@ -156,12 +157,47 @@ const TimelinePlayer = ({
       setTime(time);
       syncBlackFrame(time);
 
-      if (autoScrollWhenPlay.current) {
-        const autoScrollFrom = 500;
-        const left = time * (scaleWidth / scale) + startLeft - autoScrollFrom;
-        const state = timelineState.current;
-        if (state) state.setScrollLeft(left);
+      if (!autoScrollWhenPlay.current) return;
+
+      const state = timelineState.current;
+      if (!state) return;
+
+      const pxPerSec = scaleWidth / scale;
+      const cursorAbsX = startLeft + time * pxPerSec;
+
+      let container = scrollContainerRef.current;
+      if (!container && state.target) {
+        const grid = state.target.querySelector('.ReactVirtualized__Grid') as HTMLElement | null;
+        if (grid) {
+          scrollContainerRef.current = grid;
+          container = grid;
+        }
       }
+
+      if (!container) return;
+
+      const viewportWidth = container.clientWidth;
+      const currentScrollLeft = container.scrollLeft;
+      if (viewportWidth <= 0) return;
+
+      const baseMargin = 80;
+      const edgeMargin = Math.min(baseMargin, viewportWidth / 3);
+
+      const leftThresholdAbs = currentScrollLeft + edgeMargin;
+      const rightThresholdAbs = currentScrollLeft + viewportWidth - edgeMargin;
+
+      let nextScrollLeft: number | null = null;
+
+      if (cursorAbsX > rightThresholdAbs) {
+        nextScrollLeft = cursorAbsX - (viewportWidth - edgeMargin);
+      } else if (cursorAbsX < leftThresholdAbs) {
+        nextScrollLeft = Math.max(0, cursorAbsX - edgeMargin);
+      }
+
+      if (nextScrollLeft == null) return;
+      if (Math.abs(nextScrollLeft - currentScrollLeft) < 0.5) return;
+
+      state.setScrollLeft(nextScrollLeft);
     };
 
     engine.listener.on('play', onPlay);
@@ -179,7 +215,7 @@ const TimelinePlayer = ({
 
       videoControl.unbindEngine();
     };
-  }, [editorData]);
+  }, [editorData, scale, scaleWidth, startLeft, autoScrollWhenPlay]);
 
   // Start or pause
   const handlePlayOrPause = () => {

@@ -1,5 +1,34 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { MeliesVideoEditor } from '../lib';
+import type { MeliesVideoEditorRef } from '../lib';
+
+const DOWNLOAD_MIME = 'application/json; charset=utf-8';
+
+/**
+ * Download a string as a file using a temporary object URL.
+ * This is intentionally self-contained for the dev host.
+ */
+const downloadTextFile = (filename: string, content: string, mimeType = DOWNLOAD_MIME) => {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    // Revoke after a tick so the download can start reliably.
+    setTimeout(() => URL.revokeObjectURL(url), 500);
+  }
+};
+
+const safeTimestamp = () => {
+  // Avoid ':' which is awkward on Windows filenames.
+  return new Date().toISOString().replace(/[:.]/g, '-');
+};
 
 export default function HostApp({
   footageUrls,
@@ -10,6 +39,7 @@ export default function HostApp({
   footageFiles?: File[];
   footageFileHandles?: Array<{ getFile: () => Promise<File>; name?: string }>;
 }) {
+  const editorRef = useRef<MeliesVideoEditorRef | null>(null);
   const [note, setNote] = useState('');
   const [clicks, setClicks] = useState(0);
 
@@ -22,6 +52,17 @@ export default function HostApp({
         <div className="dev-host__headerActions">
           <button type="button" onClick={() => setClicks((c) => c + 1)}>
             Clicks: {clicks}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const snap = editorRef.current?.getTimelineSnapshot();
+              if (!snap) return;
+              const json = JSON.stringify(snap, null, 2);
+              downloadTextFile(`melies-timeline-snapshot-${safeTimestamp()}.json`, json);
+            }}
+          >
+            Download timeline state
           </button>
         </div>
       </header>
@@ -50,6 +91,7 @@ export default function HostApp({
 
         <main className="dev-host__main">
           <MeliesVideoEditor
+            ref={editorRef}
             footageUrls={footageUrls}
             footageFiles={footageFiles}
             footageFileHandles={footageFileHandles}

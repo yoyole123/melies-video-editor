@@ -1,6 +1,6 @@
 export { default as MeliesVideoEditor } from '../App';
 
-export type { MeliesVideoEditorProps } from '../App';
+export type { MeliesTimelineSnapshot, MeliesVideoEditorProps, MeliesVideoEditorRef } from '../App';
 
 export type {
   TimelineAction,
