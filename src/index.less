@@ -23,7 +23,12 @@
     cursor: grab;
     user-select: none;
     -webkit-user-select: none;
-    touch-action: manipulation;
+    touch-action: none;
+  }
+
+  // Ensure the wrapper allows scrolling if touched outside the card
+  .draggable-footage-wrapper {
+    touch-action: pan-y;
   }
 
   .footage-card.is-dragging {
@@ -45,7 +50,7 @@
 
   .footage-preview {
     width: 100%;
-    height: 55px;
+    height: 45px;
     display: block;
     object-fit: cover;
     background: #000;
@@ -67,9 +72,20 @@
     width: 100%;
     max-width: 800px;
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 6px;
+    // On mobile, use 3 columns to give clips more width (and gaps easier to hit).
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    
+    // Large vertical gap to provide "safe" scrolling areas between rows
+    row-gap: 40px;
+    column-gap: 6px;
+    
+    padding: 16px;
+    padding-bottom: 60px;
     margin-bottom: 0;
+
+    @media (min-width: 600px) {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
   }
 
   .player-stack {
@@ -118,6 +134,20 @@
     text-overflow: ellipsis;
     user-select: none;
     -webkit-user-select: none;
+  }
+
+  .footage-ribbon-hint {
+    color: fade(#fff, 50);
+    font-size: 11px;
+    margin-left: 12px;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+    user-select: none;
+  }
+
+  .footage-ribbon-hint.is-visible {
+    opacity: 1;
   }
 
   .footage-edge-handle {
@@ -246,7 +276,7 @@
     opacity: 1;
     transform: translateY(0);
     pointer-events: auto;
-    overflow: auto;
+    overflow-y: auto;
   }
 
   .footage-bin-panel.is-dragging {

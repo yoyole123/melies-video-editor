@@ -17,7 +17,7 @@ import zoomOutIconUrl from './assets/zoom-out.png';
 import {
   DndContext,
   DragOverlay,
-  PointerSensor,
+  MouseSensor,
   TouchSensor,
   rectIntersection,
   useDraggable,
@@ -161,9 +161,23 @@ const warnIfVideoGaps = (rows: CusTomTimelineRow[]) => {
   }
 };
 
-const FootageCard = ({ item, hint, isDragging }: { item: FootageItem; hint: string; isDragging: boolean }) => {
+const FootageCard = ({
+  item,
+  isDragging,
+  listeners,
+  attributes,
+}: {
+  item: FootageItem;
+  isDragging: boolean;
+  listeners?: any;
+  attributes?: any;
+}) => {
   return (
-    <div className={`footage-card${isDragging ? ' is-dragging' : ''}`}>
+    <div
+      className={`footage-card${isDragging ? ' is-dragging' : ''}`}
+      {...listeners}
+      {...attributes}
+    >
       <div className="footage-name">{item.name}</div>
       {item.kind === 'video' ? (
         <video
@@ -185,12 +199,11 @@ const FootageCard = ({ item, hint, isDragging }: { item: FootageItem; hint: stri
           onDragStart={(e) => e.preventDefault()}
         />
       )}
-      <div className="footage-kind">{hint}</div>
     </div>
   );
 };
 
-const DraggableFootageCard = ({ item, hint }: { item: FootageItem; hint: string }) => {
+const DraggableFootageCard = ({ item }: { item: FootageItem }) => {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `footage-${item.id}`,
     data: { item },
@@ -202,9 +215,16 @@ const DraggableFootageCard = ({ item, hint }: { item: FootageItem; hint: string 
       }
     : undefined;
 
+  // We set the ref on the outer wrapper (for positioning), but attach listeners only to the inner card.
+  // This leaves the "empty space" in the grid cell available for scrolling.
   return (
-    <div ref={setNodeRef} style={style} {...listeners} {...attributes}>
-      <FootageCard item={item} hint={hint} isDragging={isDragging} />
+    <div ref={setNodeRef} style={style} className="draggable-footage-wrapper">
+      <FootageCard
+        item={item}
+        isDragging={isDragging}
+        listeners={listeners}
+        attributes={attributes}
+      />
     </div>
   );
 };
@@ -1867,9 +1887,10 @@ const MeliesVideoEditor = ({
   };
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-    // On touch, require a short press-hold before starting drag, so scroll is still possible.
-    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 6 } })
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    // On touch, instant drag (with small movement threshold), so interactions feel responsive.
+    // We rely on spacing in the bin for scrolling (users touch the empty space to scroll).
+    useSensor(TouchSensor, { activationConstraint: { distance: 5 } })
   );
 
   const { setNodeRef: setTimelineDropRef, isOver: isTimelineOver } = useDroppable({ id: 'timeline-drop' });
@@ -2412,6 +2433,7 @@ const MeliesVideoEditor = ({
   return (
     <DndContext
       sensors={sensors}
+      autoScroll
       collisionDetection={rectIntersection}
       onDragStart={handleDragStart}
       onDragMove={handleDragMove}
@@ -2447,6 +2469,12 @@ const MeliesVideoEditor = ({
               </div>
 
               <div className="footage-ribbon-title">Footage</div>
+              <div
+                className={`footage-ribbon-hint${isFootageBinOpen ? ' is-visible' : ''}`}
+                aria-hidden={!isFootageBinOpen}
+              >
+                {isMobile ? 'Drag clips to timeline' : 'Drag clips to timeline'}
+              </div>
             </div>
           </div>
 
@@ -2460,7 +2488,6 @@ const MeliesVideoEditor = ({
                 <DraggableFootageCard
                   key={item.id}
                   item={item}
-                  hint={isMobile ? 'Press-hold, then drag into timeline' : 'Drag into timeline'}
                 />
               ))}
             </div>
