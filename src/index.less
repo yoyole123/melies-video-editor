@@ -12,6 +12,8 @@
   // Improve touch interactions on mobile.
   // Keep page scroll working while allowing the timeline to handle gestures.
   touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
 
   .footage-card {
     background: #2b2b2b;
@@ -332,6 +334,8 @@
 
         // Prevent browser gestures from stealing drag/resize on touch.
         touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
        
         background-position: bottom;
         background-repeat: repeat-x;
