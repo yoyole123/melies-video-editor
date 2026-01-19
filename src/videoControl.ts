@@ -277,18 +277,38 @@ class VideoControl {
     // 2. Sync Time (Seek if drifted)
     // Target video time = (globalTime - clip.start) + clip.offset
     const targetTime = Math.max(0, (globalTime - clip.start) + clip.offset);
-    const drift = Math.abs(el.currentTime - targetTime);
+    const drift = el.currentTime - targetTime;
+    const absDrift = Math.abs(drift);
 
-    // If drift is large, seek. (Tolerate ~50ms drift during playback)
-    if (drift > 0.05) {
+    // If drift is large, seek. (Tolerate larger drift to avoid stutter on mobile)
+    // Was 0.05, now 0.5 for smoother playback (Soft Sync uses rate)
+    if (absDrift > 0.5) {
        el.currentTime = targetTime;
+       // Reset rate after seek
+       if (Math.abs(el.playbackRate - this.playbackRate) > 0.01) {
+          el.playbackRate = this.playbackRate;
+       }
+    } else if (this.isPlaying && absDrift > 0.05) {
+       // Soft Sync: Nudge playback rate if drifting but not enough to justify a hard seek
+       // If video is ahead (drift > 0), slow down. If behind (drift < 0), speed up.
+       // We use a stronger nudge for video as decoding lag can be stubborn.
+       const nudge = drift > 0 ? 0.75 : 1.25; 
+       const targetRate = this.playbackRate * nudge;
+       if (Math.abs(el.playbackRate - targetRate) > 0.01) {
+          el.playbackRate = targetRate;
+       }
+    } else if (this.isPlaying && absDrift <= 0.05) {
+       // In sync: ensure rate is normal
+       if (Math.abs(el.playbackRate - this.playbackRate) > 0.01) {
+          el.playbackRate = this.playbackRate;
+       }
     }
 
     // 3. Play/Pause state
     if (this.isPlaying) {
       if (el.paused) {
         el.play().catch(() => {});
-        el.playbackRate = this.playbackRate;
+        // rate is managed above
       }
     } else {
       if (!el.paused) {
