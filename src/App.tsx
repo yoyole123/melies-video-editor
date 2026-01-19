@@ -12,6 +12,7 @@ import mediaCache from './mediaCache';
 import audioControl from './audioControl';
 import { useCoarsePointer } from './useCoarsePointer';
 import footageIconUrl from './assets/footage.png';
+import importVideoIconUrl from './assets/import_video.png';
 import zoomInIconUrl from './assets/zoom-in.png';
 import zoomOutIconUrl from './assets/zoom-out.png';
 import {
@@ -309,6 +310,8 @@ const MeliesVideoEditor = ({
   const playerPanel = useRef<HTMLDivElement | null>(null);
   const timelineWrapRef = useRef<HTMLDivElement | null>(null);
   const autoScrollWhenPlay = useRef<boolean>(true);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const importedObjectUrlsRef = useRef<string[]>([]);
 
   const urlFootageBin = useMemo<FootageItem[]>(() => {
     const urls = Array.isArray(footageUrls) ? footageUrls.filter(Boolean) : [];
@@ -323,6 +326,7 @@ const MeliesVideoEditor = ({
 
   const [fileFootageBin, setFileFootageBin] = useState<FootageItem[]>([]);
   const [handleFootageBin, setHandleFootageBin] = useState<FootageItem[]>([]);
+  const [importedFootageBin, setImportedFootageBin] = useState<FootageItem[]>([]);
 
   useEffect(() => {
     const files = Array.isArray(footageFiles) ? footageFiles.filter(Boolean) : [];
@@ -405,9 +409,22 @@ const MeliesVideoEditor = ({
     };
   }, [footageFileHandles]);
 
+  useEffect(() => {
+    return () => {
+      for (const url of importedObjectUrlsRef.current) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+      }
+      importedObjectUrlsRef.current = [];
+    };
+  }, []);
+
   const footageBin = useMemo<FootageItem[]>(() => {
-    return [...urlFootageBin, ...fileFootageBin, ...handleFootageBin];
-  }, [urlFootageBin, fileFootageBin, handleFootageBin]);
+    return [...urlFootageBin, ...fileFootageBin, ...handleFootageBin, ...importedFootageBin];
+  }, [urlFootageBin, fileFootageBin, handleFootageBin, importedFootageBin]);
 
   // Warm media duration metadata so drag previews and auto-place can use real lengths quickly.
   useEffect(() => {
@@ -2430,6 +2447,36 @@ const MeliesVideoEditor = ({
     void run();
   };
 
+  const handleImportedFiles = (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return;
+    const files = Array.from(fileList).filter(Boolean);
+    if (files.length === 0) return;
+
+    const items: FootageItem[] = [];
+    const urls: string[] = [];
+
+    for (const file of files) {
+      try {
+        const url = URL.createObjectURL(file);
+        urls.push(url);
+        mediaCache.registerSrcMeta(url, { name: file.name, mimeType: file.type });
+        items.push({
+          id: `import-${uid()}`,
+          kind: inferFootageKindFromFile(file),
+          name: file.name || 'Imported footage',
+          src: url,
+        });
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!items.length) return;
+
+    importedObjectUrlsRef.current.push(...urls);
+    setImportedFootageBin((prev) => [...prev, ...items]);
+  };
+
   return (
     <DndContext
       sensors={sensors}
@@ -2474,6 +2521,39 @@ const MeliesVideoEditor = ({
                 aria-hidden={!isFootageBinOpen}
               >
                 {isMobile ? 'Drag clips to timeline' : 'Drag clips to timeline'}
+              </div>
+            </div>
+
+            <div className="footage-ribbon-right">
+              <div
+                className={`footage-import-container${isFootageBinOpen ? ' is-visible' : ''}`}
+                aria-hidden={!isFootageBinOpen}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="video/*,audio/*"
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    handleImportedFiles(e.target.files);
+                    if (e.target) {
+                      e.target.value = '';
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="footage-import-button"
+                  onClick={() => {
+                    if (!isFootageBinOpen) return;
+                    fileInputRef.current?.click();
+                  }}
+                  aria-label="Import footage"
+                  title="Import footage"
+                >
+                  <img src={importVideoIconUrl} alt="" draggable={false} />
+                </button>
               </div>
             </div>
           </div>

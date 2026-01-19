@@ -117,6 +117,60 @@
     min-width: 0;
   }
 
+  .footage-ribbon-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+  }
+
+  .footage-import-container {
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+  }
+
+  .footage-import-container.is-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .footage-import-button {
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #2b2b2b;
+    border: 1px solid #3a3a3a;
+    padding: 0;
+    cursor: pointer;
+    touch-action: manipulation;
+
+    img {
+      width: 26px;
+      height: 26px;
+      display: block;
+      user-select: none;
+      -webkit-user-select: none;
+      pointer-events: none;
+      filter: invert(1) grayscale(1) brightness(1000%);
+    }
+  }
+
+  .footage-import-button:hover {
+    background-color: #404040;
+  }
+
+  .footage-import-button:active {
+    transform: translateY(1px);
+  }
+
+  .footage-import-button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px fade(#fff, 18);
+  }
+
   .footage-toggle-stack {
     position: relative;
     display: inline-flex;
