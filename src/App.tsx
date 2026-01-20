@@ -11,6 +11,7 @@ import videoControl from './videoControl';
 import mediaCache from './mediaCache';
 import audioControl from './audioControl';
 import { useCoarsePointer } from './useCoarsePointer';
+import { APP_VERSION } from './appVersion';
 import footageIconUrl from './assets/footage.png';
 import importVideoIconUrl from './assets/import_video.png';
 import zoomInIconUrl from './assets/zoom-in.png';
@@ -596,28 +597,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
   const zoomByFactor = (factor: number) => {
     setTimelineScaleWidth((prev) => {
       const next = Math.round(prev * factor);
-      const clamped = Math.min(600, Math.max(60, next));
-
-      // Keep the playhead anchored visually when zooming, if we have engine + scroll state.
-      const state = timelineState.current;
-      if (state) {
-        const t = getCursorTime();
-        const prevPxPerSec = prev / timelineScale;
-        const nextPxPerSec = clamped / timelineScale;
-        const playheadAbsXPrev = TIMELINE_LEFT_GUTTER_PX + t * prevPxPerSec;
-        const playheadViewX = playheadAbsXPrev - laneScrollLeft;
-        const playheadAbsXNext = TIMELINE_LEFT_GUTTER_PX + t * nextPxPerSec;
-        const nextScrollLeft = Math.max(0, playheadAbsXNext - playheadViewX);
-
-        // Defer until after React has committed the new scaleWidth.
-        requestAnimationFrame(() => {
-          if (timelineState.current) {
-            timelineState.current.setScrollLeft(nextScrollLeft);
-          }
-        });
-      }
-
-      return clamped;
+      return Math.min(600, Math.max(60, next));
     });
   };
 
@@ -2634,6 +2614,42 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
     setImportedFootageBin((prev) => [...prev, ...items]);
   };
 
+  const [isVersionTooltipOpen, setIsVersionTooltipOpen] = useState(false);
+  const versionDebugRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isVersionTooltipOpen) return;
+
+    /**
+     * Close the version tooltip on outside click / Escape.
+     * This is intentionally small + dev-only UX.
+     */
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsVersionTooltipOpen(false);
+      }
+    };
+
+    const handlePointerDown = (e: MouseEvent | TouchEvent) => {
+      const targetNode = e.target as Node | null;
+      if (!targetNode) return;
+      const root = versionDebugRef.current;
+      if (!root) return;
+      if (root.contains(targetNode)) return;
+      setIsVersionTooltipOpen(false);
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('mousedown', handlePointerDown, true);
+    document.addEventListener('touchstart', handlePointerDown, true);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('mousedown', handlePointerDown, true);
+      document.removeEventListener('touchstart', handlePointerDown, true);
+    };
+  }, [isVersionTooltipOpen]);
+
   return (
     <DndContext
       sensors={sensors}
@@ -2711,6 +2727,24 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
                 >
                   <img src={importVideoIconUrl} alt="" draggable={false} />
                 </button>
+              </div>
+
+              <div ref={versionDebugRef} className="debug-version">
+                <button
+                  type="button"
+                  className="debug-version-button"
+                  aria-label={isVersionTooltipOpen ? 'Hide version' : 'Show version'}
+                  aria-expanded={isVersionTooltipOpen}
+                  onClick={() => setIsVersionTooltipOpen((v) => !v)}
+                  title="Version"
+                >
+                  <span aria-hidden="true">i</span>
+                </button>
+                {isVersionTooltipOpen ? (
+                  <div className="debug-version-tooltip" role="tooltip">
+                    v{APP_VERSION}
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>

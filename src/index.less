@@ -121,6 +121,47 @@
     margin-left: auto;
     display: flex;
     align-items: center;
+    gap: 8px;
+  }
+
+  .debug-version {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  .debug-version-button {
+    appearance: none;
+    border: none;
+    background: transparent;
+    padding: 2px 4px;
+    line-height: 1;
+    font-size: 11px;
+    color: rgba(210, 210, 210, 0.75);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .debug-version-button:hover {
+    color: rgba(230, 230, 230, 0.9);
+  }
+
+  .debug-version-tooltip {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 6px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 1.2;
+    white-space: nowrap;
+    color: rgba(240, 240, 240, 0.9);
+    background: rgba(0, 0, 0, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    backdrop-filter: blur(6px);
+    z-index: 50;
   }
 
   .footage-import-container {
