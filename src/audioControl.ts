@@ -69,8 +69,12 @@ class AudioControl {
     // Mobile/Video fix:
     // Large video files (MP4) often fail to decode via WebAudio on mobile (memory limits).
     // Use HTML5 streaming for these.
+    // Also, pure audio files on mobile sometimes fail with WebAudio, so we default to HTML5 on mobile.
+    const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     const meta = mediaCache.getSrcMeta(src);
     const isVideo = format === 'mp4' || meta?.mimeType?.startsWith('video/');
+    
+    const useHtml5 = isVideo || isMobile;
 
     const howl = new Howl({
       src: [urlForHowler],
@@ -78,7 +82,7 @@ class AudioControl {
       loop: true,
       autoplay: false,
       preload: true,
-      html5: isVideo, // Force HTML5 Audio for video files to avoid WebAudio decode failures
+      html5: useHtml5, // Force HTML5 Audio on mobile or for video files to avoid WebAudio decode failures
     });
     this.howlBySrc[cacheKey] = howl;
     return howl;

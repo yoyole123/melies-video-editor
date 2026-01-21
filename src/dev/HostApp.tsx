@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState, useEffect } from 'react';
 import { MeliesVideoEditor } from '../lib';
 import type { MeliesVideoEditorRef } from '../lib';
 
@@ -43,6 +43,53 @@ export default function HostApp({
   const [note, setNote] = useState('');
   const [clicks, setClicks] = useState(0);
 
+  const [logs, setLogs] = useState<string[]>([]);
+
+  useEffect(() => {
+    const originalLog = console.log;
+    const originalWarn = console.warn;
+    const originalError = console.error;
+
+    const addLog = (prefix: string, args: any[]) => {
+      try {
+        const msg = args
+          .map((a) => {
+            if (typeof a === 'object') {
+              try {
+                return JSON.stringify(a);
+              } catch {
+                return '[Obj]';
+              }
+            }
+            return String(a);
+          })
+          .join(' ');
+        setLogs((prev) => [`[${prefix}] ${msg}`, ...prev].slice(0, 50));
+      } catch {
+        // ignore log errors
+      }
+    };
+
+    console.log = (...args) => {
+      originalLog(...args);
+      addLog('LOG', args);
+    };
+    console.warn = (...args) => {
+      originalWarn(...args);
+      addLog('WARN', args);
+    };
+    console.error = (...args) => {
+      originalError(...args);
+      addLog('ERR', args);
+    };
+
+    return () => {
+      console.log = originalLog;
+      console.warn = originalWarn;
+      console.error = originalError;
+    };
+  }, []);
+
   const appTitle = useMemo(() => 'Dev Host App', []);
 
   return (
@@ -86,6 +133,31 @@ export default function HostApp({
               placeholder="Type here to test focus/keyboard interactions…"
               rows={6}
             />
+          </div>
+
+          <div className="dev-host__sidebarSection">
+            <div className="dev-host__sidebarLabel">Debug Console</div>
+            <div
+              style={{
+                height: 200,
+                overflow: 'auto',
+                background: '#333',
+                color: '#eee',
+                fontSize: 10,
+                padding: 4,
+                fontFamily: 'monospace',
+                whiteSpace: 'pre-wrap',
+              }}
+            >
+              {logs.map((L, i) => (
+                <div key={i} style={{ borderBottom: '1px solid #444', marginBottom: 2 }}>
+                  {L}
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: 8, fontSize: 11, color: '#aaa' }}>
+              Is Mobile: {String(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent))}
+            </div>
           </div>
         </aside>
 
