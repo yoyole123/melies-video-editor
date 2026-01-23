@@ -623,6 +623,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
       },
     }),
     // Depend on view state that is included in snapshot.
+    // Just adding something
     [selectedActionId, timelineScaleWidth]
   );
 
