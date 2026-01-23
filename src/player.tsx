@@ -72,25 +72,30 @@ const TimelinePlayer = ({
 
   const canDelete = Boolean(selectedActionId);
 
-  const getSelectedActionRange = () => {
-    if (!selectedActionId) return null;
+  /**
+   * Whether the playhead is currently inside any clip that supports splitting.
+   * Splitting is only valid when strictly inside the clip (start < t < end).
+   */
+  const isTimeOverSplittableMedia = (t: number) => {
     const rows = Array.isArray(editorData) ? editorData : [];
     for (const row of rows) {
       const actions = (row as any)?.actions;
       if (!Array.isArray(actions)) continue;
       for (const action of actions) {
-        if (String((action as any)?.id) !== selectedActionId) continue;
+        const effectId = String((action as any)?.effectId ?? '');
+        const isAudioOrVideo = effectId === 'effect0' || effectId === 'effect1' || effectId === 'effect2';
+        if (!isAudioOrVideo) continue;
+
         const start = Number((action as any)?.start);
         const end = Number((action as any)?.end);
-        if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-        return { start, end };
+        if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+        if (t > start && t < end) return true;
       }
     }
-    return null;
+    return false;
   };
 
-  const selectedRange = getSelectedActionRange();
-  const canSplit = Boolean(selectedRange && time > selectedRange.start && time < selectedRange.end);
+  const canSplit = isTimeOverSplittableMedia(time);
 
   const isTimeOverVideo = (t: number) => {
     const rows = Array.isArray(editorData) ? editorData : [];
@@ -412,7 +417,7 @@ const TimelinePlayer = ({
           type="button"
           className="clip-tool clip-tool-split"
           disabled={!canSplit}
-          aria-label="Split selected clip at cursor"
+          aria-label="Split clips at cursor"
           onClick={() => {
             if (Date.now() - lastSplitAt.current < 450) return;
             if (!canSplit) return;

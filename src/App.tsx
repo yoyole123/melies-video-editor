@@ -1892,17 +1892,17 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
   };
 
   /**
-   * Split the selected action at the current cursor/playhead time.
+   * Split all actions under the current cursor/playhead time.
    *
    * Behavior:
-   * - Only splits when the cursor time is strictly inside the clip (start < t < end).
+   * - Splits every audio/video action that the cursor time is strictly inside (start < t < end).
    * - Pauses playback before applying changes.
    * - Records a single undo history entry (snapshot before split).
-   * - Keeps the left segment selected by retaining the original action id.
+   * - Keeps the left segment id unchanged (so selection naturally stays on the left if it was selected).
+   * - If the clip is part of a linked pair (video <-> embedded audio), splits the full pair and
+   *   generates new link ids for the left and right halves.
    */
-  const splitSelectedClipAtCursor = () => {
-    if (!selectedActionId) return;
-
+  const splitClipsAtCursor = () => {
     const state = timelineState.current;
     const cursorTimeRaw = state?.getTime ? state.getTime() : null;
     if (cursorTimeRaw == null) return;
@@ -1916,118 +1916,114 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
     pendingHistorySignatureRef.current = null;
 
     setData((prev) => {
-      // Find the selected action and validate split is possible.
-      let foundRowIndex = -1;
-      let foundActionIndex = -1;
-      let foundAction: CustomTimelineAction | null = null;
+      const splittableEffectIds = new Set(['effect0', 'effect1', 'effect2']);
+      const asOptionalLinkId = (v: unknown) => {
+        const s = v != null ? String(v) : '';
+        return s ? s : undefined;
+      };
+
+      type Found = { rowIndex: number; actionIndex: number; action: CustomTimelineAction };
+      const targets: Found[] = [];
 
       for (let rowIndex = 0; rowIndex < prev.length; rowIndex++) {
         const row = prev[rowIndex];
         const actions = Array.isArray(row?.actions) ? row.actions : [];
         for (let actionIndex = 0; actionIndex < actions.length; actionIndex++) {
           const action = actions[actionIndex] as unknown as CustomTimelineAction;
-          if (String(action?.id) !== selectedActionId) continue;
-          foundRowIndex = rowIndex;
-          foundActionIndex = actionIndex;
-          foundAction = action;
-          break;
-        }
-        if (foundAction) break;
-      }
+          const effectId = String((action as any)?.effectId ?? '');
+          if (!splittableEffectIds.has(effectId)) continue;
 
-      if (!foundAction) return prev;
+          const start = Number((action as any)?.start);
+          const end = Number((action as any)?.end);
+          if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+          if (!(start < cursorTime && cursorTime < end)) continue;
 
-      // If this is a linked clip (video <-> embedded audio), we split BOTH so the link stays intact.
-      const foundLinkId = (foundAction as any)?.data?.linkId ? String((foundAction as any).data.linkId) : null;
-      let partnerRowIndex = -1;
-      let partnerActionIndex = -1;
-      let partnerAction: CustomTimelineAction | null = null;
-
-      if (foundLinkId) {
-        for (let rowIndex = 0; rowIndex < prev.length; rowIndex++) {
-          const row = prev[rowIndex];
-          const actions = Array.isArray(row?.actions) ? row.actions : [];
-          for (let actionIndex = 0; actionIndex < actions.length; actionIndex++) {
-            const action = actions[actionIndex] as unknown as CustomTimelineAction;
-            if (String(action?.id) === selectedActionId) continue;
-            if (String((action as any)?.data?.linkId ?? '') !== foundLinkId) continue;
-            partnerRowIndex = rowIndex;
-            partnerActionIndex = actionIndex;
-            partnerAction = action;
-            break;
-          }
-          if (partnerAction) break;
+          targets.push({ rowIndex, actionIndex, action });
         }
       }
 
-      const start = Number(foundAction.start);
-      const end = Number(foundAction.end);
-      if (!Number.isFinite(start) || !Number.isFinite(end)) return prev;
-      if (!(start < cursorTime && cursorTime < end)) return prev;
+      if (targets.length === 0) return prev;
 
       pushHistory(prev);
 
-      // Generate new link ids so we end up with two linked pairs (left and right).
-      const leftLinkId = foundLinkId && partnerAction ? `link-${uid()}` : foundLinkId;
-      const rightLinkId = foundLinkId && partnerAction ? `link-${uid()}` : foundLinkId;
+      // Compute per-action split instructions, preserving linked video/audio pairing.
+      const splitSpecByActionId = new Map<string, { leftLinkId?: string; rightLinkId?: string }>();
+      const targetsByLinkId = new Map<string, Found[]>();
 
-      const rightActionId = `${String(foundAction.id)}-r-${uid()}`;
-      const currentOffsetRaw = Number((foundAction as any)?.data?.offset ?? 0);
-      const currentOffset = Number.isFinite(currentOffsetRaw) ? currentOffsetRaw : 0;
-      const splitDelta = cursorTime - start;
-      const rightOffset = currentOffset + (Number.isFinite(splitDelta) ? splitDelta : 0);
+      for (const t of targets) {
+        const linkId = asOptionalLinkId((t.action as any)?.data?.linkId);
+        if (!linkId) {
+          splitSpecByActionId.set(String((t.action as any)?.id ?? ''), {});
+          continue;
+        }
+        const group = targetsByLinkId.get(linkId) ?? [];
+        group.push(t);
+        targetsByLinkId.set(linkId, group);
+      }
 
-      const left: CustomTimelineAction = {
-        ...foundAction,
-        start,
-        end: cursorTime,
-        id: foundAction.id,
-        data: { ...(foundAction as any).data, offset: currentOffset, linkId: leftLinkId ?? undefined },
-      };
-      const right: CustomTimelineAction = {
-        ...foundAction,
-        start: cursorTime,
-        end,
-        id: rightActionId,
-        data: { ...(foundAction as any).data, offset: rightOffset, linkId: rightLinkId ?? undefined },
-      };
+      for (const [linkId, group] of targetsByLinkId.entries()) {
+        // If we have at least 2 targets sharing a linkId, we treat them as a linked pair/group
+        // and create new link ids for the left + right halves.
+        const shouldSplitLink = group.length > 1;
+        const leftLinkId = shouldSplitLink ? `link-${uid()}` : linkId;
+        const rightLinkId = shouldSplitLink ? `link-${uid()}` : linkId;
+        for (const g of group) {
+          splitSpecByActionId.set(String((g.action as any)?.id ?? ''), { leftLinkId, rightLinkId });
+        }
+      }
 
       const next = structuredClone(prev) as CusTomTimelineRow[];
-      const nextRow = next[foundRowIndex];
-      const nextActions = Array.isArray(nextRow.actions) ? [...nextRow.actions] : [];
-      nextActions.splice(foundActionIndex, 1, left, right);
-      nextActions.sort((a, b) => Number((a as any).start) - Number((b as any).start));
-      nextRow.actions = nextActions as any;
 
-      if (partnerAction && partnerRowIndex >= 0 && partnerActionIndex >= 0) {
-        const pStart = Number((partnerAction as any).start);
-        const pEnd = Number((partnerAction as any).end);
-        if (Number.isFinite(pStart) && Number.isFinite(pEnd) && pStart === start && pEnd === end) {
-          const partnerOffsetRaw = Number((partnerAction as any)?.data?.offset);
-          const partnerOffset = Number.isFinite(partnerOffsetRaw) ? partnerOffsetRaw : currentOffset;
-          const partnerRightOffset = partnerOffset + (Number.isFinite(splitDelta) ? splitDelta : 0);
-          const partnerRightId = `${String((partnerAction as any).id)}-r-${uid()}`;
-          const partnerLeft: CustomTimelineAction = {
-            ...partnerAction,
+      for (let rowIndex = 0; rowIndex < next.length; rowIndex++) {
+        const row = next[rowIndex];
+        const actions = Array.isArray(row.actions) ? [...row.actions] : [];
+        const out: CustomTimelineAction[] = [];
+
+        for (const rawAction of actions) {
+          const action = rawAction as unknown as CustomTimelineAction;
+          const actionId = String((action as any)?.id ?? '');
+          const spec = splitSpecByActionId.get(actionId);
+          if (!spec) {
+            out.push(action);
+            continue;
+          }
+
+          const start = Number((action as any)?.start);
+          const end = Number((action as any)?.end);
+          if (!Number.isFinite(start) || !Number.isFinite(end) || !(start < cursorTime && cursorTime < end)) {
+            out.push(action);
+            continue;
+          }
+
+          const existingLinkId = asOptionalLinkId((action as any)?.data?.linkId);
+          const leftLinkOut = spec.leftLinkId ?? existingLinkId;
+          const rightLinkOut = spec.rightLinkId ?? existingLinkId;
+
+          const currentOffsetRaw = Number((action as any)?.data?.offset ?? 0);
+          const currentOffset = Number.isFinite(currentOffsetRaw) ? currentOffsetRaw : 0;
+          const splitDelta = cursorTime - start;
+          const rightOffset = currentOffset + (Number.isFinite(splitDelta) ? splitDelta : 0);
+
+          const left: CustomTimelineAction = {
+            ...action,
             start,
             end: cursorTime,
-            id: (partnerAction as any).id,
-            data: { ...(partnerAction as any).data, offset: partnerOffset, linkId: leftLinkId ?? undefined },
+            id: (action as any).id,
+            data: { ...(action as any).data, offset: currentOffset, linkId: leftLinkOut },
           };
-          const partnerRight: CustomTimelineAction = {
-            ...partnerAction,
+          const right: CustomTimelineAction = {
+            ...action,
             start: cursorTime,
             end,
-            id: partnerRightId,
-            data: { ...(partnerAction as any).data, offset: partnerRightOffset, linkId: rightLinkId ?? undefined },
+            id: `${actionId}-r-${uid()}`,
+            data: { ...(action as any).data, offset: rightOffset, linkId: rightLinkOut },
           };
 
-          const partnerRow = next[partnerRowIndex];
-          const partnerActions = Array.isArray(partnerRow.actions) ? [...partnerRow.actions] : [];
-          partnerActions.splice(partnerActionIndex, 1, partnerLeft, partnerRight);
-          partnerActions.sort((a, b) => Number((a as any).start) - Number((b as any).start));
-          partnerRow.actions = partnerActions as any;
+          out.push(left, right);
         }
+
+        out.sort((a, b) => Number((a as any).start) - Number((b as any).start));
+        row.actions = out as any;
       }
 
       return next;
@@ -2761,7 +2757,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
                 </button>
               </div>
 
-              <div className="footage-ribbon-title">Footage</div>
+              <div className="footage-ribbon-title">Footage Bin</div>
               <div
                 className={`footage-ribbon-hint${isFootageBinOpen ? ' is-visible' : ''}`}
                 aria-hidden={!isFootageBinOpen}
@@ -2876,7 +2872,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
           editorData={data}
           selectedActionId={selectedActionId}
           onDeleteSelectedClip={deleteSelectedClip}
-          onSplitSelectedClip={splitSelectedClipAtCursor}
+          onSplitSelectedClip={splitClipsAtCursor}
           canUndo={past.length > 0}
           canRedo={future.length > 0}
           onUndo={undo}
