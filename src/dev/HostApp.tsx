@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, useEffect } from 'react';
 import { MeliesVideoEditor } from '../lib';
-import type { MeliesFootageImportEvent, MeliesVideoEditorRef } from '../lib';
+import type { MeliesFootageImportEvent, MeliesTimelineSnapshot, MeliesVideoEditorRef } from '../lib';
 
 const DOWNLOAD_MIME = 'application/json; charset=utf-8';
 
@@ -30,6 +30,29 @@ const safeTimestamp = () => {
   return new Date().toISOString().replace(/[:.]/g, '-');
 };
 
+/**
+ * Parse and validate a Melies timeline snapshot JSON payload.
+ *
+ * Keeps validation light on purpose: this is a dev host helper meant to
+ * reproduce restore flows rather than enforce strict schema.
+ */
+const parseTimelineSnapshotJson = (rawJson: string) => {
+  const parsed = JSON.parse(rawJson) as unknown;
+  if (!parsed || typeof parsed !== 'object') throw new Error('Snapshot JSON must be an object.');
+
+  const obj = parsed as Record<string, unknown>;
+  const version = Number(obj.version);
+  if (version !== 1) {
+    throw new Error(`Unsupported snapshot version: ${String(obj.version)} (expected 1).`);
+  }
+
+  if (!Array.isArray(obj.editorData)) {
+    throw new Error('Invalid snapshot: editorData must be an array.');
+  }
+
+  return parsed as MeliesTimelineSnapshot;
+};
+
 export default function HostApp({
   footageUrls,
   footageFiles,
@@ -40,6 +63,7 @@ export default function HostApp({
   footageFileHandles?: Array<{ getFile: () => Promise<File>; name?: string }>;
 }) {
   const editorRef = useRef<MeliesVideoEditorRef | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const [note, setNote] = useState('');
   const [clicks, setClicks] = useState(0);
 
@@ -126,8 +150,38 @@ export default function HostApp({
     );
   };
 
+  /**
+   * Dev-only: import a previously downloaded snapshot JSON file.
+   * Applies it via the editor ref to exercise the same restore code path.
+   */
+  const handleImportSnapshotFile = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const raw = await file.text();
+      const snapshot = parseTimelineSnapshotJson(raw);
+
+      if (!editorRef.current?.setTimelineSnapshot) {
+        throw new Error('Editor ref not ready yet.');
+      }
+
+      editorRef.current.setTimelineSnapshot(snapshot);
+      console.log('[HostApp] Imported timeline snapshot', {
+        name: file.name,
+        size: file.size,
+        version: snapshot.version,
+        rows: Array.isArray(snapshot.editorData) ? snapshot.editorData.length : 0,
+      });
+    } catch (err) {
+      console.warn('[HostApp] Failed to import timeline snapshot', err);
+    } finally {
+      // Allow re-importing the same file by clearing the input value.
+      if (importInputRef.current) importInputRef.current.value = '';
+    }
+  };
+
   return (
     <div className="dev-host">
+      <style>{`.dev-host button{color:#fff} .dev-host button[disabled]{opacity:0.65}`}</style>
       <header className="dev-host__header">
         <div className="dev-host__title">{appTitle}</div>
         <div className="dev-host__headerActions">
@@ -144,6 +198,26 @@ export default function HostApp({
             }}
           >
             Download timeline state
+          </button>
+
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json,.json"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const file = e.target.files && e.target.files.length ? e.target.files[0] : null;
+              void handleImportSnapshotFile(file);
+            }}
+          />
+
+          <button
+            type="button"
+            onClick={() => {
+              importInputRef.current?.click();
+            }}
+          >
+            Import timeline state
           </button>
         </div>
       </header>
