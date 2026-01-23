@@ -33,7 +33,6 @@ class VideoControl {
 
   // Engine binding
   private boundEngine: TimelineEngine | null = null;
-  private boundActionStart = 0; // Not strictly used in global-time mode but kept for compat
   
   // Frame loop handles
   private vfcHandle: number | null = null;
@@ -42,7 +41,6 @@ class VideoControl {
   // State tracking
   private isPlaying = false;
   private playbackRate = 1;
-  private currentClipId: string | null = null; // apparent clip ID
   private lastVideoClip: QueuedClip | null = null;
   
   // If the user manually seeks, we need to invalidate preloads
@@ -100,7 +98,7 @@ class VideoControl {
    * We use claimVideo to drive the dual-buffer logic from the engine's time updates.
    * This ensures we sync to the engine's clock (Slave Mode).
    */
-  claimVideo(data: { isPlaying?: boolean; time?: number }) {
+  claimVideo(data: { isPlaying?: boolean; time?: number; [key: string]: unknown }) {
     this.isPlaying = Boolean(data.isPlaying);
     const time = Number(data.time);
     if (Number.isFinite(time)) {
@@ -197,7 +195,6 @@ class VideoControl {
         this.loadVideo(this.primaryEl, currentClip.src);
         this.makeActive(this.primaryEl, currentClip, time);
       }
-      this.currentClipId = currentClip.actionId;
       this.lastVideoClip = currentClip;
     } else {
       // GAP HANDLING
@@ -214,6 +211,8 @@ class VideoControl {
         this.activeEl != null;
 
       if (isMicroGap) {
+        const active = this.activeEl;
+        if (!active) return;
         // Keep the last visible video, but STOP it and clamp to the last frame of the clip.
         const endTime = Math.max(
           0,
@@ -221,17 +220,17 @@ class VideoControl {
         );
 
         // Hide the other element, keep active visible.
-        const other = this.activeEl === this.primaryEl ? this.secondaryEl : this.primaryEl;
-        other.style.opacity = '0';
-        this.activeEl.style.opacity = '1';
+        const other = active === this.primaryEl ? this.secondaryEl : this.primaryEl;
+        if (other) other.style.opacity = '0';
+        active.style.opacity = '1';
 
         try {
-          if (!this.activeEl.paused) this.activeEl.pause();
-          const duration = this.activeEl.duration;
+          if (!active.paused) active.pause();
+          const duration = active.duration;
           if (Number.isFinite(duration) && duration > 0) {
-            this.activeEl.currentTime = Math.min(endTime, Math.max(0, duration - 0.05));
+            active.currentTime = Math.min(endTime, Math.max(0, duration - 0.05));
           } else {
-            this.activeEl.currentTime = Math.max(0, endTime);
+            active.currentTime = Math.max(0, endTime);
           }
         } catch {
           // ignore
@@ -242,7 +241,6 @@ class VideoControl {
         this.secondaryEl.style.opacity = '0';
 
         this.activeEl = null;
-        this.currentClipId = null;
 
         // Ensure they stop processing immediately.
         if (!this.primaryEl.paused) this.primaryEl.pause();

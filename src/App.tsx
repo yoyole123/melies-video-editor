@@ -165,11 +165,13 @@ const warnIfVideoGaps = (rows: CusTomTimelineRow[]) => {
 
 const FootageCard = ({
   item,
+  hint,
   isDragging,
   listeners,
   attributes,
 }: {
   item: FootageItem;
+  hint?: string;
   isDragging: boolean;
   listeners?: any;
   attributes?: any;
@@ -177,6 +179,7 @@ const FootageCard = ({
   return (
     <div
       className={`footage-card${isDragging ? ' is-dragging' : ''}`}
+      title={hint}
       {...listeners}
       {...attributes}
     >
@@ -278,6 +281,31 @@ export type MeliesVideoEditorProps = {
    * Consumers should debounce/throttle this callback when persisting to a DB.
    */
   onTimelineStateChange?: (snapshot: MeliesTimelineSnapshot) => void;
+
+  /**
+   * Fired when the user imports files into the footage bin.
+   *
+   * This exposes the actual `File` objects to the host app (for upload/OPFS/storage).
+   * Note: imported `blob:` URLs are session-only; hosts should persist and rehydrate using
+   * stable asset identifiers if they need cross-session restore.
+   */
+  onFootageImported?: (event: MeliesFootageImportEvent) => void;
+};
+
+export type MeliesFootageImportEntry = {
+  /** The bin item added to the footage bin. */
+  item: FootageItem;
+  /** The underlying file selected by the user. */
+  file: File;
+};
+
+export type MeliesFootageImportEvent = {
+  /** Pairs each created bin item to its underlying file. */
+  entries: MeliesFootageImportEntry[];
+  /** Convenience list of items. */
+  items: FootageItem[];
+  /** Convenience list of files. */
+  files: File[];
 };
 
 export type MeliesTimelineSnapshot = {
@@ -303,6 +331,15 @@ export type MeliesVideoEditorRef = {
    * Resets undo/redo history.
    */
   setTimelineSnapshot: (snapshot: MeliesTimelineSnapshot) => void;
+
+  /**
+   * Get the imported `File` for a given footage item id (only for user-imported items).
+   * Returns null if the id was not imported this session.
+   */
+  getImportedFileByFootageId: (footageId: string) => File | null;
+
+  /** List all imported files currently known to the editor (this session). */
+  listImportedFiles: () => Array<{ footageId: string; file: File }>;
 };
 
 const cloneSerializable = <T,>(value: T): T => {
@@ -345,6 +382,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
     autoPlaceFootage = false,
     initialTimelineSnapshot,
     onTimelineStateChange,
+    onFootageImported,
   }: MeliesVideoEditorProps,
   ref
 ) {
@@ -367,6 +405,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
   const autoScrollWhenPlay = useRef<boolean>(true);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const importedObjectUrlsRef = useRef<string[]>([]);
+  const importedFilesByIdRef = useRef<Map<string, File>>(new Map());
 
   const urlFootageBin = useMemo<FootageItem[]>(() => {
     const urls = Array.isArray(footageUrls) ? footageUrls.filter(Boolean) : [];
@@ -474,6 +513,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
         }
       }
       importedObjectUrlsRef.current = [];
+      importedFilesByIdRef.current.clear();
     };
   }, []);
 
@@ -559,6 +599,15 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
     () => ({
       getTimelineSnapshot,
       setTimelineSnapshot,
+      getImportedFileByFootageId: (footageId: string) => {
+        return importedFilesByIdRef.current.get(String(footageId)) ?? null;
+      },
+      listImportedFiles: () => {
+        return Array.from(importedFilesByIdRef.current.entries()).map(([footageId, file]) => ({
+          footageId,
+          file,
+        }));
+      },
     }),
     // Depend on view state that is included in snapshot.
     [selectedActionId, timelineScaleWidth]
@@ -1290,7 +1339,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
 
     const end = Math.max(0, closestPoint);
     const start = Math.min(nextStart, end - 0.01);
-    return { start: Math.max(0, start), end: Math.max(0, end), snapped: true, edge };
+    return { start: Math.max(0, start), end: Math.max(0, end), snapped: true, edge: snapEdge };
   };
 
   const insertActionAtTime = async (
@@ -2590,6 +2639,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
     if (files.length === 0) return;
 
     const items: FootageItem[] = [];
+    const entries: MeliesFootageImportEntry[] = [];
     const urls: string[] = [];
 
     for (const file of files) {
@@ -2597,12 +2647,15 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
         const url = URL.createObjectURL(file);
         urls.push(url);
         mediaCache.registerSrcMeta(url, { name: file.name, mimeType: file.type });
-        items.push({
+        const item: FootageItem = {
           id: `import-${uid()}`,
           kind: inferFootageKindFromFile(file),
           name: file.name || 'Imported footage',
           src: url,
-        });
+        };
+        importedFilesByIdRef.current.set(item.id, file);
+        items.push(item);
+        entries.push({ item, file });
       } catch {
         // ignore
       }
@@ -2612,6 +2665,12 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
 
     importedObjectUrlsRef.current.push(...urls);
     setImportedFootageBin((prev) => [...prev, ...items]);
+
+    try {
+      onFootageImported?.({ entries, items, files: entries.map((e) => e.file) });
+    } catch (err) {
+      console.warn('[MeliesVideoEditor] onFootageImported threw', err);
+    }
   };
 
   const [isVersionTooltipOpen, setIsVersionTooltipOpen] = useState(false);

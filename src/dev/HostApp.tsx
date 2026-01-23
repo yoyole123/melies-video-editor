@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, useEffect } from 'react';
 import { MeliesVideoEditor } from '../lib';
-import type { MeliesVideoEditorRef } from '../lib';
+import type { MeliesFootageImportEvent, MeliesVideoEditorRef } from '../lib';
 
 const DOWNLOAD_MIME = 'application/json; charset=utf-8';
 
@@ -92,6 +92,40 @@ export default function HostApp({
 
   const appTitle = useMemo(() => 'Dev Host App', []);
 
+  /** Dev-only: prove the imported-footage API works end-to-end. */
+  const handleFootageImported = (event: MeliesFootageImportEvent) => {
+    console.log('[HostApp] onFootageImported: files=', event.files.length, 'items=', event.items.length);
+
+    const first = event.entries[0];
+    if (first) {
+      console.log('[HostApp] first import item', {
+        id: first.item.id,
+        name: first.item.name,
+        kind: first.item.kind,
+        srcPrefix: String(first.item.src).slice(0, 16),
+      });
+      console.log('[HostApp] first import file', {
+        name: first.file.name,
+        size: first.file.size,
+        type: first.file.type,
+        lastModified: first.file.lastModified,
+      });
+
+      const lookedUp = editorRef.current?.getImportedFileByFootageId(first.item.id) ?? null;
+      console.log('[HostApp] ref lookup match?', {
+        found: Boolean(lookedUp),
+        sameName: lookedUp ? lookedUp.name === first.file.name : false,
+        sameSize: lookedUp ? lookedUp.size === first.file.size : false,
+      });
+    }
+
+    const all = editorRef.current?.listImportedFiles() ?? [];
+    console.log(
+      '[HostApp] listImportedFiles',
+      all.map((x) => ({ footageId: x.footageId, name: x.file.name, size: x.file.size }))
+    );
+  };
+
   return (
     <div className="dev-host">
       <header className="dev-host__header">
@@ -167,6 +201,7 @@ export default function HostApp({
             footageUrls={footageUrls}
             footageFiles={footageFiles}
             footageFileHandles={footageFileHandles}
+            onFootageImported={handleFootageImported}
           />
         </main>
       </div>
