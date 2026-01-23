@@ -56,6 +56,32 @@ class AudioControl {
     }
   > = {};
 
+  /**
+   * Stop and detach an active sound instance for a given action id.
+   *
+   * This is a best-effort cleanup helper used by both `stop()` and `reset()`.
+   */
+  private stopActiveAction(actionId: string): void {
+    const active = this.activeByActionId[actionId];
+    if (!active) return;
+
+    const howl = this.getHowl(active.src);
+    try {
+      howl.stop(active.soundId);
+    } catch {
+      // ignore
+    }
+
+    try {
+      if (active.time) active.engine.off('afterSetTime', active.time);
+      if (active.rate) active.engine.off('afterSetPlayRate', active.rate);
+    } catch {
+      // ignore
+    }
+
+    delete this.activeByActionId[actionId];
+  }
+
   private getHowl(src: string): Howl {
     const resolved = mediaCache.resolve(src);
     // Prefer the resolved (often blob:) URL to avoid network stalls.
@@ -133,7 +159,16 @@ class AudioControl {
     // If this action is already active, just re-sync.
     const existing = this.activeByActionId[actionId];
     if (existing) {
-      const howl = this.getHowl(existing.src);
+      // IMPORTANT:
+      // action IDs are persisted in timeline snapshots. If the editor unmounts/remounts,
+      // we can end up with a stale entry pointing at a revoked blob URL or bound to a
+      // different engine instance. In those cases we must recreate the sound.
+      const isStaleSrc = existing.src !== src;
+      const isStaleEngine = existing.engine !== engine;
+      if (isStaleSrc || isStaleEngine) {
+        this.stopActiveAction(actionId);
+      } else {
+        const howl = this.getHowl(existing.src);
       howl.rate(engine.getPlayRate(), existing.soundId);
 
       // If the sound was stopped/never started for some reason, try to resume.
@@ -150,6 +185,7 @@ class AudioControl {
         this.seekForEngineTime(howl, existing.soundId, existing.startTime, time, existing.offset);
       }
       return;
+      }
     }
 
     const howl = this.getHowl(src);
@@ -250,19 +286,34 @@ class AudioControl {
 
   stop(data: { actionId: string }) {
     const { actionId } = data;
-    const active = this.activeByActionId[actionId];
-    if (!active) return;
+    this.stopActiveAction(actionId);
+  }
 
-    const howl = this.getHowl(active.src);
-    try {
-      howl.stop(active.soundId);
-    } catch {
-      // ignore
+  /**
+   * Fully reset audio playback state.
+   *
+   * This is important because `audioControl` is a singleton and action IDs are
+   * stable across snapshot restores. Without a reset, we can keep references to
+   * revoked blob URLs or previous engine instances, causing silent playback.
+   */
+  reset(): void {
+    const actionIds = Object.keys(this.activeByActionId);
+    for (const actionId of actionIds) {
+      this.stopActiveAction(actionId);
     }
 
-    active.time && active.engine.off('afterSetTime', active.time);
-    active.rate && active.engine.off('afterSetPlayRate', active.rate);
-    delete this.activeByActionId[actionId];
+    // Howler objects can retain decoded buffers and HTML5 audio elements.
+    // Unload to avoid holding onto revoked blob URLs across sessions.
+    const howls = Object.values(this.howlBySrc);
+    for (const howl of howls) {
+      try {
+        howl.unload();
+      } catch {
+        // ignore
+      }
+    }
+
+    this.howlBySrc = {};
   }
 }
 

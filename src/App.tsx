@@ -407,6 +407,15 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
   const importedObjectUrlsRef = useRef<string[]>([]);
   const importedFilesByIdRef = useRef<Map<string, File>>(new Map());
 
+  // audioControl is a module singleton. When this editor unmounts (or when we load
+  // a new timeline snapshot), we must reset it so it doesn't retain stale action ids
+  // that point to revoked blob URLs from a prior session.
+  useEffect(() => {
+    return () => {
+      audioControl.reset();
+    };
+  }, []);
+
   const urlFootageBin = useMemo<FootageItem[]>(() => {
     const urls = Array.isArray(footageUrls) ? footageUrls.filter(Boolean) : [];
     if (!urls.length) return [];
@@ -575,6 +584,10 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
     } catch {
       // ignore
     }
+
+    // Reset audio state when replacing the timeline so stale action ids or revoked
+    // blob URLs from a previous session cannot survive into the restored timeline.
+    audioControl.reset();
 
     const nextRows = quantizeEditorData(cloneSerializable(snapshot.editorData ?? createEmptyEditorData()));
     const nextSelected = snapshot.selectedActionId ?? null;
