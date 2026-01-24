@@ -1,0 +1,513 @@
+Base44 App Integration Guide (Melies Export: AWS IAM + S3 + SQS)
+=============================================================
+
+Goal
+----
+Wire Base44’s Export button + the (planned) `onExport` callback so exports run the same end-to-end flow as the manual script:
+
+1) Build timeline payload from the editor state
+2) Determine which media assets are referenced by the timeline
+3) Request presigned S3 upload URLs from the Export API
+4) Upload all referenced assets to S3 using the presigned URLs
+5) Start an export job by sending { timeline, assets:[{src,s3Key}] }
+6) Poll job status until SUCCEEDED/FAILED
+7) Download the finalized MP4 via the job’s downloadUrl
+
+This matches the behavior in:
+- server/aws-export/scripts/test-manual.js
+
+
+What Base44 must implement (checklist)
+-------------------------------------
+To make the export flow fully work in production, Base44 needs:
+
+1) Configuration (via Base44 “secrets” env vars)
+  Base44 should store these as environment variables (“secrets”) and read them at runtime:
+  - MELIES_EXPORT_API_BASE_URL  (includes stage, e.g. https://.../prod)
+  - MELIES_EXPORT_REGION
+  - MELIES_EXPORT_IDENTITY_POOL_ID
+
+  These correspond to the CDK outputs:
+  - ExportApiBaseUrl
+  - ExportRegion
+  - ExportIdentityPoolId
+
+2) An asset resolution layer
+  - Given a timeline `src` key, Base44 must be able to load the exact bytes (Blob/File)
+    either from OPFS or from Base44 cloud storage.
+  - It must also provide `contentType` and a safe extension `.mp4/.mp3/...` for presign.
+
+3) A `src` key strategy (the most important design choice)
+  - Decide what string is written into timeline actions as `action.data.src`.
+  - That string MUST be stable across sessions if it will be stored in snapshots.
+  - That string MUST be resolvable back to bytes by the host.
+
+4) Export orchestration
+  - presign → upload (PUT) → start export → poll → download
+  - Retries + good UX for large uploads
+
+
+High-level architecture
+-----------------------
+- Base44 app stores footage in a Movie.mediaLibrary manifest (cloudUrl, opfsFileName, assetId, mimeType, etc.)
+- The Melies editor renders and edits a timeline where each action references an asset by `action.data.src`.
+- The AWS export pipeline does NOT fetch Base44 cloud URLs. It renders only from files that were uploaded to the Export system’s S3 bucket.
+
+Therefore:
+- The Base44 app must provide asset bytes (Blob/File) to the export pipeline by uploading them to S3 presigned URLs.
+- The Export API uses `src` as a stable “join key” between the timeline and the uploaded asset list.
+
+
+How auth + CORS actually work in this AWS stack (CDK truth)
+----------------------------------------------------------
+The deployed stack uses:
+- API Gateway HTTP API
+- AWS_IAM authorization on ALL endpoints (HttpIamAuthorizer)
+- Cognito Identity Pool with allowUnauthenticatedIdentities: true
+- A GuestRole that allows `execute-api:Invoke` on:
+  - /health
+  - /export*
+
+Client flow:
+1) Browser calls Cognito Identity JSON-RPC endpoints to obtain unauthenticated STS creds
+2) Browser signs API Gateway requests with SigV4 (service: execute-api)
+
+This is implemented in:
+- server/aws-export/client/iamExportClient.js
+
+CORS allowlist:
+- The API GW CORS preflight is configured with a strict origin allowlist.
+- The S3 buckets for assets/exports are also configured with matching CORS allowlists.
+
+IMPORTANT for Base44:
+- Your Base44 app origin MUST be included in the allowlist; otherwise browser requests will fail.
+- Current allowlist is hardcoded in CDK as:
+  - https://sparkle-stories-c8b62fef.base44.app
+- If you need dev/local origins, the CDK stack must be updated (not a Base44-only change).
+
+Allowed request headers (API GW):
+- content-type
+- authorization
+- x-amz-date
+- x-amz-security-token
+- x-amz-content-sha256
+
+If Base44’s networking layer adds custom headers, they must be added to CORS allowHeaders.
+
+Security posture note:
+- With an unauth Identity Pool, anyone who can run code in an allowed origin can obtain creds.
+- If you need per-user access control or quota enforcement, you’ll need to extend the model
+  (e.g., authenticated identities, per-tenant roles/policies, WAF/rate limits, or a server-side proxy).
+
+
+Important data model details (audio vs video)
+--------------------------------------------
+The export worker’s ffmpeg plan only looks at these fields:
+- row.actions[].effectId
+- row.actions[].start
+- row.actions[].end
+- row.actions[].data.src
+
+Effect IDs:
+- effect1: Video track (video frames)
+- effect2: Video’s embedded audio track (audio extracted from the same video file)
+- effect0: Standalone audio clips (e.g., MP3/WAV)
+
+CRITICAL: If you add a video clip to the timeline and want its audio to be included in the export, the timeline MUST include the paired audio action (effect2) referencing the same underlying asset src.
+
+In Melies, a “video clip with audio” is represented as:
+- one action in a video lane with effectId = "effect1" (video)
+- one action in an audio lane with effectId = "effect2" (embedded audio)
+
+If you only provide effect1 without effect2, the export may legitimately render with no audio.
+
+
+Timeline compatibility / known limitations
+-----------------------------------------
+The editor timeline data supports additional fields that affect playback, especially:
+- action.data.offset (trim-in / split continuation)
+
+Current AWS worker ffmpeg plan does NOT apply `offset` yet.
+It always trims inputs from start=0 for each segment.
+
+Implication:
+- Base44 can wire the export pipeline correctly and still see mismatches vs in-editor playback
+  when clips have been split/trimmed and rely on non-zero offsets.
+
+Until offset support is implemented in the worker:
+- Expect accurate exports for simple “place clip from the beginning” cases.
+- Expect incorrect content when exporting split clips (right-side segments should start later in source).
+
+
+Recommended `src` key strategy
+------------------------------
+The export pipeline treats `data.src` as a key (string) that must match an entry in assets[].
+
+You have two viable approaches:
+
+A) Use Base44 assetId as the src key (recommended)
+- Timeline uses: data.src = "base44-asset:<assetId>" (or just the raw assetId)
+- Base44 app knows how to map assetId -> Blob bytes (OPFS or cloud download)
+- Pros: stable across sessions and doesn’t embed expiring URLs into snapshots
+- Cons: requires that the editor playback code can resolve assetId to a playable URL (either by passing playable URLs separately, or by using a small mapping layer)
+
+B) Use Base44 cloudUrl as the src key
+- Timeline uses: data.src = asset.cloudUrl
+- Pros: simplest if the editor already plays directly from cloudUrl
+- Cons: snapshots now depend on URL stability, and URLs can be long or expiring
+
+In both cases, for export you still upload bytes to S3; src is only used as a mapping key.
+
+
+Recommended Base44 strategy (more explicit)
+-----------------------------------------
+Prefer using a stable, short identifier derived from Base44’s mediaLibrary:
+
+- `srcKey = "base44-asset:<assetId>"`
+
+Why:
+- assetId is stable across sessions and DB snapshots
+- it avoids persisting long/possibly-expiring URLs
+- it makes dedupe and caching practical
+
+Base44 then must provide:
+- resolveAssetBlob("base44-asset:<assetId>") → Blob/File bytes
+- resolveAssetMeta("base44-asset:<assetId>") → { contentType, ext }
+
+Playback vs export:
+- The editor playback may still use `cloudUrl` or a blob/object URL, but the timeline should keep
+  a stable `srcKey`. If you cannot change what the editor stores today, you can still bridge it
+  by mapping `cloudUrl` back to assetId using the mediaLibrary manifest.
+
+
+Export API configuration (from CDK outputs)
+------------------------------------------
+Base44 must know:
+- apiBaseUrl: Export API base URL, including stage (e.g. https://.../prod)
+- region: AWS region
+- identityPoolId: Cognito Identity Pool ID (unauth)
+
+In Base44, provide these via environment variables (“secrets”):
+- MELIES_EXPORT_API_BASE_URL
+- MELIES_EXPORT_REGION
+- MELIES_EXPORT_IDENTITY_POOL_ID
+
+Mapping:
+- apiBaseUrl = MELIES_EXPORT_API_BASE_URL
+- region = MELIES_EXPORT_REGION
+- identityPoolId = MELIES_EXPORT_IDENTITY_POOL_ID
+
+These are the same values used in server/aws-export/scripts/test-manual.js.
+
+Stage note:
+- The CDK stack hardcodes stageName = "prod" and the ExportApiBaseUrl output includes it.
+- Base44 must treat apiBaseUrl as an absolute base URL and append paths like "/export".
+
+
+Client dependency
+-----------------
+The provided client uses SigV4 via aws4fetch:
+- server/aws-export/client/iamExportClient.js
+
+In Base44 frontend, include aws4fetch as a dependency in the web bundle.
+
+Do NOT use:
+- server/aws-export/client/exportClient.js (deprecated; old HMAC signing)
+
+
+End-to-end export flow (browser)
+--------------------------------
+This is the exact flow Base44 should implement when the user clicks Export.
+
+Step 0: Get timeline snapshot from the editor
+- Use the editor ref API:
+  - getTimelineSnapshot() -> { version, editorData, selectedActionId, timelineScaleWidth }
+
+Step 1: Collect referenced assets from timeline
+- Iterate editorData rows/actions and collect unique action.data.src values.
+- Include srcs from effect IDs: effect0, effect1, effect2
+  (effect1 is video frames; effect2 is embedded audio; effect0 is standalone audio)
+
+Step 2: Resolve each src key to bytes (Blob/File)
+Base44 should resolve assets in this order:
+1) OPFS if available and present (fast)
+2) Cloud storage URL download (fallback)
+
+The bytes that you upload to S3 must match the original file.
+
+Suggested interface:
+- resolveAssetBlob(srcKey) -> Promise<{ blob, contentType, ext }>
+
+Important:
+- For large videos, prefer streaming sources if your platform supports it, but presigned PUT
+  generally accepts the Blob/File directly.
+- Ensure the bytes represent the exact source file (no transcoding on the client).
+
+Step 3: Presign uploads
+Call:
+- POST /export/presign
+Body:
+  { assets: [{ src, contentType, ext }, ...] }
+Response:
+  { uploads: [{ src, s3Key, uploadUrl }, ...] }
+
+Step 4: Upload to S3
+For each upload:
+- HTTP PUT uploadUrl with the raw Blob/File bytes
+- Send Content-Type header (video/mp4, audio/mpeg, etc.)
+
+Upload robustness recommendations:
+- Upload in parallel but cap concurrency (e.g. 3-6) to avoid saturating client/network.
+- Retry transient failures (network errors, 5xx) with backoff.
+- If an upload fails, abort the export early and show a useful error.
+
+Step 5: Start export job
+Call:
+- POST /export
+Body:
+  { timeline: <timelineSnapshotOrTimeline>, assets: [{ src, s3Key }, ...] }
+Response:
+  { jobId }
+
+Important: timeline must include editorData.
+
+Step 6: Poll status
+Call:
+- GET /export/{jobId}
+Until:
+- status === "SUCCEEDED" or "FAILED"
+
+Polling recommendations:
+- Poll every ~1.5s initially; consider backing off for long renders.
+- Enforce a max timeout (example: 10 minutes) and show a “still rendering” message.
+
+Step 7: Download final MP4
+When status === "SUCCEEDED":
+- response includes downloadUrl
+- fetch(downloadUrl) -> Blob
+- trigger browser download (e.g. createObjectURL + <a download>)
+
+Download behavior:
+- `downloadUrl` is a presigned S3 GET URL and will expire.
+- Download immediately after SUCCEEDED.
+
+
+Concrete timeline example (video + embedded audio)
+-------------------------------------------------
+This places a 1-second segment at t=2..3 seconds.
+
+- effect1 = video
+- effect2 = embedded audio
+- both must reference the same src key
+
+Example:
+{
+  version: 1,
+  editorData: [
+    { id: "0", actions: [] },
+    {
+      id: "1",
+      actions: [
+        {
+          id: "v1",
+          effectId: "effect1",
+          start: 2,
+          end: 3,
+          data: { src: "base44-asset:25688c6f-..." }
+        }
+      ]
+    },
+    { id: "2", actions: [] },
+    {
+      id: "3",
+      actions: [
+        {
+          id: "a1",
+          effectId: "effect2",
+          start: 2,
+          end: 3,
+          data: { src: "base44-asset:25688c6f-..." }
+        }
+      ]
+    }
+  ]
+}
+
+If you omit effect2, the current export worker will output a silent video.
+
+
+How Base44 maps src -> asset bytes
+----------------------------------
+Base44 already has a Movie.mediaLibrary manifest, e.g.:
+- assetId
+- mimeType
+- cloudUrl
+- opfsFileName
+
+Recommended mapping if using strategy (A):
+- srcKey = "base44-asset:<assetId>"
+- resolveAssetBlob parses the assetId and looks it up in mediaLibrary
+- then loads bytes from OPFS or cloudUrl
+
+If using strategy (B):
+- srcKey = cloudUrl
+- resolveAssetBlob fetches that URL (or maps the URL back to assetId for OPFS)
+
+
+Exact API request/response contracts (as implemented)
+----------------------------------------------------
+These shapes are enforced by the Lambda handler:
+
+POST /export/presign
+- Request JSON:
+  { "assets": [{ "src": string, "contentType"?: string, "ext"?: string }] }
+- Response JSON:
+  { "uploads": [{ "src": string, "s3Key": string, "uploadUrl": string }] }
+
+Notes:
+- `ext` must start with '.' and be short; otherwise it is ignored and the object has no extension.
+- `uploadUrl` is a presigned PUT; Base44 uploads bytes directly to it.
+
+POST /export
+- Request JSON:
+  { "timeline": unknown, "assets": [{ "src": string, "s3Key": string }] }
+- Validation:
+  timeline.editorData MUST be an array
+- Response JSON:
+  { "jobId": string }
+
+GET /export/{jobId}
+- Response JSON:
+  { jobId, status, error?, outputKey?, downloadUrl? }
+
+Status values:
+- QUEUED, RUNNING, SUCCEEDED, FAILED (plus UNKNOWN if data is malformed)
+
+
+Export UX guidance
+------------------
+Suggested UI behavior:
+- Disable the Export button while exporting
+- Show progress states:
+  - “Preparing assets…” (collect + resolve)
+  - “Uploading footage…” (PUT to S3)
+  - “Rendering…” (poll job)
+  - “Downloading…” (downloadUrl)
+- On failure, surface the job error string from GET /export/{jobId}
+
+
+Business logic: how to collect referenced assets correctly
+---------------------------------------------------------
+Base44 must include ALL srcs referenced by actions, not just video actions.
+
+Minimum rule:
+- For every row/action in editorData:
+  - if action.data.src is present, include it
+
+Better rule:
+- Only include actions whose effectId is one of:
+  - effect1 (video)
+  - effect2 (video audio)
+  - effect0 (audio)
+
+This avoids uploading unrelated/non-media actions if new effects are added later.
+
+
+Planned Melies editor API: onExport
+----------------------------------
+This repo is adding an `onExport` callback so the hosting app (Base44) owns the export pipeline.
+
+Recommended callback contract:
+- onExport({ snapshot, getReferencedSrcs, resolveSrcMeta })
+  where:
+  - snapshot is equivalent to editorRef.getTimelineSnapshot()
+  - getReferencedSrcs() returns unique src keys referenced by effect0/effect1/effect2
+  - resolveSrcMeta(src) returns { contentType, ext, suggestedName } if available
+
+Base44 implementation then:
+- Collect srcs
+- For each src, load bytes from OPFS/cloud
+- Presign + upload + start job + poll + download
+
+
+Suggested Base44 implementation pseudocode (TypeScript-like)
+-----------------------------------------------------------
+This shows the complete orchestration Base44 should implement.
+
+1) Create client once:
+
+  const client = createExportIamClient({
+    apiBaseUrl: ExportApiBaseUrl,
+    region: ExportRegion,
+    identityPoolId: ExportIdentityPoolId,
+  });
+
+2) On export:
+
+  async function exportCurrentMovie(editorRef) {
+    const snap = editorRef.getTimelineSnapshot();
+    const editorData = snap.editorData;
+
+    const srcs = collectUniqueSrcs(editorData); // include effect0/effect1/effect2
+
+    const assetInputs = await Promise.all(srcs.map(async (src) => {
+      const { blob, contentType, ext } = await resolveAssetBlob(src);
+      return { src, blob, contentType, ext };
+    }));
+
+    const presign = await client.presignAssets(assetInputs.map(a => ({
+      src: a.src,
+      contentType: a.contentType,
+      ext: a.ext,
+    })));
+
+    // Upload (cap concurrency in real code)
+    await Promise.all(assetInputs.map(async (a) => {
+      const u = presign.uploads.find(x => x.src === a.src);
+      if (!u) throw new Error(`Missing presign for src: ${a.src}`);
+      await fetch(u.uploadUrl, { method: 'PUT', headers: { 'content-type': a.contentType }, body: a.blob });
+    }));
+
+    const job = await client.startExport({
+      timeline: snap,
+      assets: presign.uploads.map(u => ({ src: u.src, s3Key: u.s3Key })),
+    });
+
+    const done = await pollUntilDone(job.jobId);
+    if (done.status !== 'SUCCEEDED') throw new Error(done.error || 'Export failed');
+
+    const mp4Blob = await fetch(done.downloadUrl).then(r => r.blob());
+    downloadBlob(mp4Blob, `export-${job.jobId}.mp4`);
+  }
+
+The exact Node test equivalent is in server/aws-export/scripts/test-manual.js.
+
+
+Operational notes / gotchas
+---------------------------
+- API Gateway/Lambda request size limits make “multipart upload all assets to /export” infeasible for real videos.
+- The Export worker currently uses the uploaded file as both video and audio source for effect2.
+- If Base44 stores audio-only assets (MP3), those should be placed on the timeline with effect0.
+- Ensure uploaded Content-Type matches the real file type, so downstream tooling behaves predictably.
+- Ensure that timeline action.data.src keys are stable across session restore; avoid blob: URLs in persisted snapshots.
+
+Cloud resource notes (for Base44 awareness):
+- AssetsBucket: receives uploaded source assets (S3 PUT via presigned URLs)
+- ExportsBucket: receives rendered mp4 outputs
+- JobsTable: tracks job status and contains outputKey/error
+- JobsQueue (SQS): job dispatch to worker
+
+Timeout/limits:
+- API Lambda timeout is short (~15s). It only presigns and enqueues jobs.
+- Worker timeout is long (~15 minutes) and uses a container image with ffmpeg.
+
+
+References in this repo
+-----------------------
+- IAM client: server/aws-export/client/iamExportClient.js
+- API handler: server/aws-export/src/api/handler.ts
+- Worker: server/aws-export/src/worker/handler.ts
+- ffmpeg plan: server/aws-export/src/shared/ffmpegPlan.ts
+- E2E script: server/aws-export/scripts/test-manual.js
+- Editor snapshot API: src/App.tsx (MeliesVideoEditorRef.getTimelineSnapshot)
+- Effect mapping: src/mock.ts (effect0/effect1/effect2)
