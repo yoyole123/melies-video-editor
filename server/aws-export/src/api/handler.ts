@@ -6,7 +6,6 @@ import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
 
-import { assertValidSignature } from '../shared/security';
 import { getEditorData } from '../shared/timeline';
 
 const s3 = new S3Client({});
@@ -17,9 +16,6 @@ const ASSETS_BUCKET = process.env.ASSETS_BUCKET ?? '';
 const EXPORTS_BUCKET = process.env.EXPORTS_BUCKET ?? '';
 const JOBS_TABLE = process.env.JOBS_TABLE ?? '';
 const QUEUE_URL = process.env.QUEUE_URL ?? '';
-const SIGNING_SECRET_ARN = process.env.SIGNING_SECRET_ARN ?? '';
-
-const SIGNING_MAX_SKEW_SECONDS = Number(process.env.SIGNING_MAX_SKEW_SECONDS ?? 300);
 const PRESIGN_UPLOAD_EXPIRES_SECONDS = Number(process.env.PRESIGN_UPLOAD_EXPIRES_SECONDS ?? 900);
 const PRESIGN_DOWNLOAD_EXPIRES_SECONDS = Number(process.env.PRESIGN_DOWNLOAD_EXPIRES_SECONDS ?? 900);
 const JOB_TTL_SECONDS = Number(process.env.JOB_TTL_SECONDS ?? 7 * 24 * 60 * 60);
@@ -54,37 +50,11 @@ function assertEnv() {
     ['EXPORTS_BUCKET', EXPORTS_BUCKET],
     ['JOBS_TABLE', JOBS_TABLE],
     ['QUEUE_URL', QUEUE_URL],
-    ['SIGNING_SECRET_ARN', SIGNING_SECRET_ARN],
   ].filter(([, v]) => !v);
 
   if (missing.length) {
     throw new Error(`Missing env vars: ${missing.map(([k]) => k).join(', ')}`);
   }
-}
-
-function requiresSigning(method: string, path: string): boolean {
-  // Keep health publicly accessible; everything else is trusted.
-  void method;
-  return path.startsWith('/export');
-}
-
-async function requireSignature(event: APIGatewayProxyEventV2): Promise<void> {
-  const method = event.requestContext.http.method.toUpperCase();
-  const path = event.rawPath;
-  if (!requiresSigning(method, path)) return;
-
-  const timestampHeader = event.headers['x-base44-timestamp'] ?? event.headers['X-Base44-Timestamp'];
-  const signatureHeader = event.headers['x-base44-signature'] ?? event.headers['X-Base44-Signature'];
-
-  await assertValidSignature({
-    signingSecretArn: SIGNING_SECRET_ARN,
-    timestampHeader,
-    signatureHeader,
-    method,
-    path,
-    rawBody: getRawBody(event),
-    maxSkewSeconds: SIGNING_MAX_SKEW_SECONDS,
-  });
 }
 
 type PresignRequest = {
@@ -100,16 +70,13 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   try {
     assertEnv();
 
-    const method = event.requestContext.http.method.toUpperCase();
-    const path = event.rawPath;
+    const routeKey = event.routeKey;
 
-    if (method === 'GET' && path === '/health') {
+    if (routeKey === 'GET /health') {
       return json(200, { ok: true });
     }
 
-    await requireSignature(event);
-
-    if (method === 'POST' && path === '/export/presign') {
+    if (routeKey === 'POST /export/presign') {
       const rawBody = getRawBody(event);
       const parsed = JSON.parse(rawBody || '{}') as PresignRequest;
       const assets = Array.isArray(parsed.assets) ? parsed.assets : [];
@@ -138,7 +105,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       return json(200, { uploads });
     }
 
-    if (method === 'POST' && path === '/export') {
+    if (routeKey === 'POST /export') {
       const rawBody = getRawBody(event);
       const parsed = JSON.parse(rawBody || '{}') as StartExportRequest;
 
@@ -200,9 +167,10 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       return json(200, { jobId });
     }
 
-    const jobMatch = path.match(/^\/export\/(?<jobId>[a-zA-Z0-9-]+)$/);
-    if (method === 'GET' && jobMatch?.groups?.jobId) {
-      const jobId = jobMatch.groups.jobId;
+    if (routeKey === 'GET /export/{jobId}') {
+      const jobId = event.pathParameters?.jobId;
+
+      if (!jobId) return json(400, { error: 'Missing jobId parameter.' });
 
       const resp = await ddb.send(
         new GetCommand({
@@ -231,15 +199,12 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       });
     }
 
-    return json(404, { error: 'Not found.' });
+    console.log('Route not found context:', { routeKey, rawPath: event.rawPath });
+    return json(404, { error: 'Not found.', debugRoute: routeKey, debugPath: event.rawPath });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
 
     const lower = message.toLowerCase();
-    if (lower.includes('signature') || lower.includes('x-base44-timestamp') || lower.includes('timestamp')) {
-      return json(401, { error: message });
-    }
-
     if (lower.startsWith('missing env vars')) {
       return json(500, { error: 'Server misconfiguration.' });
     }

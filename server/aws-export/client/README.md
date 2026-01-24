@@ -3,7 +3,6 @@
 This is a small JavaScript helper for calling the AWS Export API.
 
 It:
-- computes the **HMAC request signature**
 - presigns S3 uploads via `POST /export/presign`
 - uploads assets directly to S3 with PUT
 - starts the export job via `POST /export`
@@ -11,38 +10,32 @@ It:
 
 ## Intended usage
 
-Use this from:
-- your Base44 server/backend, OR
-- a dev script on your machine
+The Export API is protected by **IAM (SigV4)**. For browser usage, use a Cognito **Identity Pool** (unauthenticated) to obtain short-lived credentials, then SigV4-sign requests to API Gateway.
 
-Avoid shipping the signing secret to untrusted browsers.
+This folder contains:
+- `iamExportClient.js` (current) — browser-friendly IAM/SigV4 helper
+- `exportClient.js` (deprecated) — the old HMAC-based helper (kept only for historical reference)
+
+`iamExportClient.js` uses `aws4fetch` for SigV4 signing.
 
 ## Example
 
+Install the signer dependency in your frontend project:
+
+- `pnpm add aws4fetch` (or `npm i aws4fetch`)
+
+Then:
+
 ```js
-import fs from 'node:fs/promises';
-import { exportVideo } from './exportClient.js';
+import { createExportIamClient } from './iamExportClient.js';
 
-const baseUrl = process.env.EXPORT_API_BASE_URL;
-const secret = process.env.EXPORT_SIGNING_SECRET;
-
-const timeline = { editorData: [] };
-
-const fileBytes = await fs.readFile('./my-video.mp4');
-
-const result = await exportVideo({
-  baseUrl,
-  secret,
-  timeline,
-  assets: [
-    {
-      src: 'file:///my-video.mp4',
-      body: fileBytes,
-      contentType: 'video/mp4',
-      ext: '.mp4',
-    },
-  ],
+const exportApi = createExportIamClient({
+	apiBaseUrl: '<ExportApiBaseUrl>',
+	region: '<ExportRegion>',
+	identityPoolId: '<ExportIdentityPoolId>',
 });
 
-console.log(result);
+await exportApi.health();
 ```
+
+See the main README for the required CDK outputs (`ExportApiBaseUrl`, `ExportIdentityPoolId`, `ExportRegion`).

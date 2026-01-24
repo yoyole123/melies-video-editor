@@ -1,6 +1,11 @@
 import crypto from 'node:crypto';
 
 /**
+ * @deprecated The Export API is now protected by IAM (SigV4) and no longer accepts HMAC-signed requests.
+ * This file is kept only as historical reference.
+ */
+
+/**
  * Computes the signature used by the Export API.
  *
  * Signed message format:

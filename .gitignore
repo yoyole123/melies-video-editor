@@ -24,3 +24,7 @@ dist-ssr
 *.sw?
 *.mp4
 *.mp3
+
+# AWS CDK
+**/cdk.out/
+**/.cdk.staging/

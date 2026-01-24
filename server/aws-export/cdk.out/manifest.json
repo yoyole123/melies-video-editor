@@ -18,7 +18,7 @@
         "validateOnSynth": false,
         "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-deploy-role-${AWS::AccountId}-${AWS::Region}",
         "cloudFormationExecutionRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-cfn-exec-role-${AWS::AccountId}-${AWS::Region}",
-        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/82c550d35c2eecb1481c2bc49d1cbc4593ad4971ec3c51773e73034db93a2a9a.json",
+        "stackTemplateAssetObjectUrl": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/1e9a966488e07318de88240af505205a5c1ae9dd3d62b97c68b6a3ae6bc9a6c6.json",
         "requiresBootstrapStackVersion": 6,
         "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/hnb659fds/version",
         "additionalDependencies": [
@@ -34,12 +34,6 @@
         "MeliesExportStack.assets"
       ],
       "metadata": {
-        "/MeliesExportStack/SigningSecret/Resource": [
-          {
-            "type": "aws:cdk:logicalId",
-            "data": "SigningSecretCF7EC744"
-          }
-        ],
         "/MeliesExportStack/AssetsBucket/Resource": [
           {
             "type": "aws:cdk:logicalId",
@@ -154,12 +148,6 @@
             "data": "ExportHttpApiAB019D1B"
           }
         ],
-        "/MeliesExportStack/ExportHttpApi/DefaultStage/Resource": [
-          {
-            "type": "aws:cdk:logicalId",
-            "data": "ExportHttpApiDefaultStage852CC1D6"
-          }
-        ],
         "/MeliesExportStack/ExportHttpApi/GET--health/ExportApiIntegration/Resource": [
           {
             "type": "aws:cdk:logicalId",
@@ -214,16 +202,64 @@
             "data": "ExportHttpApiGETexportjobIdF7BB6BCE"
           }
         ],
-        "/MeliesExportStack/ExportApiEndpoint": [
+        "/MeliesExportStack/ExportHttpStage/Resource": [
           {
             "type": "aws:cdk:logicalId",
-            "data": "ExportApiEndpoint"
+            "data": "ExportHttpStage04B91359"
           }
         ],
-        "/MeliesExportStack/ExportSigningSecretArn": [
+        "/MeliesExportStack/IdentityPool": [
           {
             "type": "aws:cdk:logicalId",
-            "data": "ExportSigningSecretArn"
+            "data": "IdentityPool"
+          }
+        ],
+        "/MeliesExportStack/GuestRole/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "GuestRole80ECD357"
+          }
+        ],
+        "/MeliesExportStack/GuestRole/DefaultPolicy/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "GuestRoleDefaultPolicy074E2FB1"
+          }
+        ],
+        "/MeliesExportStack/IdentityPoolRoleAttachment": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "IdentityPoolRoleAttachment"
+          }
+        ],
+        "/MeliesExportStack/ExportApiBaseUrl": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "ExportApiBaseUrl"
+          }
+        ],
+        "/MeliesExportStack/ExportApiId": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "ExportApiId"
+          }
+        ],
+        "/MeliesExportStack/ExportStageName": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "ExportStageName"
+          }
+        ],
+        "/MeliesExportStack/ExportIdentityPoolId": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "ExportIdentityPoolId"
+          }
+        ],
+        "/MeliesExportStack/ExportRegion": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "ExportRegion"
           }
         ],
         "/MeliesExportStack/ExportAssetsBucket": [

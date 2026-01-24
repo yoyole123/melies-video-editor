@@ -1,7 +1,8 @@
 FROM public.ecr.aws/lambda/nodejs:20 AS builder
 
 # Install tools needed to fetch a static ffmpeg build.
-RUN yum -y install curl tar xz ; yum clean all
+# curl usually comes pre-installed or via curl-minimal. Installing "curl" causes package conflicts.
+RUN dnf -y install tar xz unzip ; dnf clean all
 
 # Download a static ffmpeg build (x86_64). Update URL/version as needed.
 RUN mkdir -p /opt/ffmpeg \
@@ -23,14 +24,14 @@ RUN npx esbuild src/worker/handler.ts --bundle --platform=node --target=node20 -
 
 FROM public.ecr.aws/lambda/nodejs:20
 
-RUN yum -y install tar xz ; yum clean all
+RUN dnf -y install tar xz ; dnf clean all
 
 # ffmpeg
 COPY --from=builder /opt/ffmpeg /opt/ffmpeg
 RUN ln -sf /opt/ffmpeg/ffmpeg /usr/local/bin/ffmpeg \
-  ; ln -sf /opt/ffmpeg/ffprobe /usr/local/bin/ffprobe
+    && ln -sf /opt/ffmpeg/ffprobe /usr/local/bin/ffprobe
 
-# Lambda code
-COPY --from=builder /var/task/dist/index.cjs ${LAMBDA_TASK_ROOT}/index.cjs
+# Copy built code
+COPY --from=builder /var/task/dist/index.cjs ./index.js
 
 CMD ["index.handler"]

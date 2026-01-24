@@ -1,0 +1,11 @@
+{
+  "MeliesExportStack": {
+    "ExportRegion": "eu-west-1",
+    "ExportAssetsBucket": "meliesexportstack-assetsbucket5cb76180-3oizmt8jtshg",
+    "ExportApiId": "oe38rhsa4g",
+    "ExportExportsBucket": "meliesexportstack-exportsbucket5a12738b-xkd5zzvpkyyz",
+    "ExportStageName": "prod",
+    "ExportApiBaseUrl": "https://oe38rhsa4g.execute-api.eu-west-1.amazonaws.com/prod",
+    "ExportIdentityPoolId": "eu-west-1:0958da6a-3cd5-4bf2-a34e-b2d2313dfb84"
+  }
+}

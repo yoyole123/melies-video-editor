@@ -23,40 +23,33 @@ Why it looks different than the Express version:
 
 ## Security (trusted callers)
 
-All `/export*` endpoints require **HMAC-signed requests** (including polling/downloading).
+All endpoints are protected by **AWS IAM (SigV4)** at API Gateway.
 
-Headers:
-- `x-base44-timestamp`: unix epoch ms
-- `x-base44-signature`: hex HMAC-SHA256 signature
+Call flow:
 
-The signed string is:
+Browser (Base44)
+→ Cognito **Identity Pool** (unauthenticated)
+→ short-lived AWS credentials (issued by Cognito/STS)
+→ API Gateway HTTP API (**IAM auth**)
+→ Lambda
 
-```
-${timestamp}.${method}.${path}.${rawBody}
-```
+Properties:
+- No API keys or secrets in the client
+- No user login required
+- Credentials expire automatically
+- IAM policy can be scoped to only `execute-api:Invoke` for this API
 
-Signature (Node example):
+### CORS (strict)
 
-```js
-import crypto from 'crypto';
+The stack configures CORS with a strict allowlist.
 
-function sign({ secret, timestamp, method, path, bodyString }) {
-  const msg = `${timestamp}.${method}.${path}.${bodyString}`;
-  return crypto.createHmac('sha256', secret).update(msg).digest('hex');
-}
-```
+Current allowlist is hardcoded in the CDK stack as:
+- `https://sparkle-stories-c8b62fef.base44.app`
 
-The API rejects requests if:
-- timestamp is older/newer than 5 minutes
-- signature does not match
+If you need local dev origins, add them to `allowedOrigins` in the CDK stack.
 
-The secret is stored in **AWS Secrets Manager** and read by the lambdas.
-
-After deploy, fetch the secret value (for configuring Base44 + your dev client):
-
-1. Find the secret ARN from the CDK output `ExportSigningSecretArn`
-2. Read it:
-  - `aws secretsmanager get-secret-value --secret-id <arn> --query SecretString --output text`
+Note: Presigned S3 uploads/downloads also require S3 bucket CORS rules for the same origin.
+The CDK stack configures bucket CORS for the same allowlist so browser PUT/GET requests work.
 
 ## Request/Response shapes
 
@@ -119,12 +112,17 @@ From this folder:
    - `npx cdk deploy`
 
 Outputs include:
-- API endpoint
-- Secrets Manager ARN for the signing secret
+- `ExportApiBaseUrl` (includes the stage, e.g. `.../prod`)
+- `ExportApiId`
+- `ExportStageName`
+- `ExportIdentityPoolId`
+- `ExportRegion`
 
 ## JS client helper
 
-See [melies-video-editor/server/aws-export/client/README.md](melies-video-editor/server/aws-export/client/README.md) for a JavaScript helper you can use from your backend/dev scripts.
+See [server/aws-export/client/README.md](server/aws-export/client/README.md) for a browser-friendly JavaScript helper (`iamExportClient.js`) that:
+- obtains unauth Cognito Identity Pool credentials
+- SigV4-signs requests to API Gateway (AWS_IAM)
 
 ## Dev vs prod
 

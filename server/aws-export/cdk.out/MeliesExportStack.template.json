@@ -1,17 +1,5 @@
 {
  "Resources": {
-  "SigningSecretCF7EC744": {
-   "Type": "AWS::SecretsManager::Secret",
-   "Properties": {
-    "Description": "HMAC signing secret for Melies export endpoints.",
-    "GenerateSecretString": {}
-   },
-   "UpdateReplacePolicy": "Delete",
-   "DeletionPolicy": "Delete",
-   "Metadata": {
-    "aws:cdk:path": "MeliesExportStack/SigningSecret/Resource"
-   }
-  },
   "AssetsBucket5CB76180": {
    "Type": "AWS::S3::Bucket",
    "Properties": {
@@ -21,6 +9,26 @@
        "ServerSideEncryptionByDefault": {
         "SSEAlgorithm": "AES256"
        }
+      }
+     ]
+    },
+    "CorsConfiguration": {
+     "CorsRules": [
+      {
+       "AllowedHeaders": [
+        "*"
+       ],
+       "AllowedMethods": [
+        "PUT",
+        "HEAD"
+       ],
+       "AllowedOrigins": [
+        "https://sparkle-stories-c8b62fef.base44.app"
+       ],
+       "ExposedHeaders": [
+        "ETag"
+       ],
+       "MaxAge": 864000
       }
      ]
     },
@@ -195,6 +203,26 @@
        "ServerSideEncryptionByDefault": {
         "SSEAlgorithm": "AES256"
        }
+      }
+     ]
+    },
+    "CorsConfiguration": {
+     "CorsRules": [
+      {
+       "AllowedHeaders": [
+        "*"
+       ],
+       "AllowedMethods": [
+        "GET",
+        "HEAD"
+       ],
+       "AllowedOrigins": [
+        "https://sparkle-stories-c8b62fef.base44.app"
+       ],
+       "ExposedHeaders": [
+        "ETag"
+       ],
+       "MaxAge": 864000
       }
      ]
     },
@@ -373,16 +401,6 @@
      "Statement": [
       {
        "Action": [
-        "secretsmanager:GetSecretValue",
-        "secretsmanager:DescribeSecret"
-       ],
-       "Effect": "Allow",
-       "Resource": {
-        "Ref": "SigningSecretCF7EC744"
-       }
-      },
-      {
-       "Action": [
         "s3:GetObject*",
         "s3:GetBucket*",
         "s3:List*",
@@ -524,7 +542,7 @@
      "S3Bucket": {
       "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
      },
-     "S3Key": "863b7b4e7a4ca0bdbb8333884fb2fd27f4c69067ec99cebe07c99e8125e3a708.zip"
+     "S3Key": "ea209928bb3d104d87e355f8a7cedafa35408407f8641cd74049c50904f07433.zip"
     },
     "Environment": {
      "Variables": {
@@ -540,10 +558,6 @@
       "QUEUE_URL": {
        "Ref": "JobsQueue86ED6666"
       },
-      "SIGNING_SECRET_ARN": {
-       "Ref": "SigningSecretCF7EC744"
-      },
-      "SIGNING_MAX_SKEW_SECONDS": "300",
       "PRESIGN_UPLOAD_EXPIRES_SECONDS": "900",
       "PRESIGN_DOWNLOAD_EXPIRES_SECONDS": "900",
       "JOB_TTL_SECONDS": "604800"
@@ -566,7 +580,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "MeliesExportStack/ExportApiLambda/Resource",
-    "aws:asset:path": "asset.863b7b4e7a4ca0bdbb8333884fb2fd27f4c69067ec99cebe07c99e8125e3a708",
+    "aws:asset:path": "asset.ea209928bb3d104d87e355f8a7cedafa35408407f8641cd74049c50904f07433",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -610,16 +624,6 @@
    "Properties": {
     "PolicyDocument": {
      "Statement": [
-      {
-       "Action": [
-        "secretsmanager:GetSecretValue",
-        "secretsmanager:DescribeSecret"
-       ],
-       "Effect": "Allow",
-       "Resource": {
-        "Ref": "SigningSecretCF7EC744"
-       }
-      },
       {
        "Action": [
         "s3:GetObject*",
@@ -753,7 +757,7 @@
    "Properties": {
     "Code": {
      "ImageUri": {
-      "Fn::Sub": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-${AWS::AccountId}-${AWS::Region}:617c197eea693edecb66c6f4dd3e99fbe419040fd13982e487a935ccf4e906c7"
+      "Fn::Sub": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-${AWS::AccountId}-${AWS::Region}:e522288a020de569dc5085ae7ae401a930acfc098ef14476526190a4dcd665d2"
      }
     },
     "Environment": {
@@ -766,9 +770,6 @@
       },
       "JOBS_TABLE": {
        "Ref": "JobsTable1970BC16"
-      },
-      "SIGNING_SECRET_ARN": {
-       "Ref": "SigningSecretCF7EC744"
       },
       "EXPORT_WIDTH": "1280",
       "EXPORT_HEIGHT": "720",
@@ -795,7 +796,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "MeliesExportStack/ExportWorkerLambda/Resource",
-    "aws:asset:path": "asset.617c197eea693edecb66c6f4dd3e99fbe419040fd13982e487a935ccf4e906c7",
+    "aws:asset:path": "asset.e522288a020de569dc5085ae7ae401a930acfc098ef14476526190a4dcd665d2",
     "aws:asset:dockerfile-path": "worker-image/Dockerfile",
     "aws:asset:property": "Code.ImageUri"
    }
@@ -821,24 +822,28 @@
   "ExportHttpApiAB019D1B": {
    "Type": "AWS::ApiGatewayV2::Api",
    "Properties": {
+    "CorsConfiguration": {
+     "AllowHeaders": [
+      "content-type",
+      "authorization",
+      "x-amz-date",
+      "x-amz-security-token",
+      "x-amz-content-sha256"
+     ],
+     "AllowMethods": [
+      "GET",
+      "POST"
+     ],
+     "AllowOrigins": [
+      "https://sparkle-stories-c8b62fef.base44.app"
+     ],
+     "MaxAge": 864000
+    },
     "Name": "melies-export-api",
     "ProtocolType": "HTTP"
    },
    "Metadata": {
     "aws:cdk:path": "MeliesExportStack/ExportHttpApi/Resource"
-   }
-  },
-  "ExportHttpApiDefaultStage852CC1D6": {
-   "Type": "AWS::ApiGatewayV2::Stage",
-   "Properties": {
-    "ApiId": {
-     "Ref": "ExportHttpApiAB019D1B"
-    },
-    "AutoDeploy": true,
-    "StageName": "$default"
-   },
-   "Metadata": {
-    "aws:cdk:path": "MeliesExportStack/ExportHttpApi/DefaultStage/Resource"
    }
   },
   "ExportHttpApiGEThealthExportApiIntegrationE49A34BA": {
@@ -906,7 +911,7 @@
     "ApiId": {
      "Ref": "ExportHttpApiAB019D1B"
     },
-    "AuthorizationType": "NONE",
+    "AuthorizationType": "AWS_IAM",
     "RouteKey": "GET /health",
     "Target": {
      "Fn::Join": [
@@ -970,7 +975,7 @@
     "ApiId": {
      "Ref": "ExportHttpApiAB019D1B"
     },
-    "AuthorizationType": "NONE",
+    "AuthorizationType": "AWS_IAM",
     "RouteKey": "POST /export/presign",
     "Target": {
      "Fn::Join": [
@@ -1034,7 +1039,7 @@
     "ApiId": {
      "Ref": "ExportHttpApiAB019D1B"
     },
-    "AuthorizationType": "NONE",
+    "AuthorizationType": "AWS_IAM",
     "RouteKey": "POST /export",
     "Target": {
      "Fn::Join": [
@@ -1098,7 +1103,7 @@
     "ApiId": {
      "Ref": "ExportHttpApiAB019D1B"
     },
-    "AuthorizationType": "NONE",
+    "AuthorizationType": "AWS_IAM",
     "RouteKey": "GET /export/{jobId}",
     "Target": {
      "Fn::Join": [
@@ -1116,10 +1121,154 @@
     "aws:cdk:path": "MeliesExportStack/ExportHttpApi/GET--export--{jobId}/Resource"
    }
   },
+  "ExportHttpStage04B91359": {
+   "Type": "AWS::ApiGatewayV2::Stage",
+   "Properties": {
+    "ApiId": {
+     "Ref": "ExportHttpApiAB019D1B"
+    },
+    "AutoDeploy": true,
+    "StageName": "prod"
+   },
+   "Metadata": {
+    "aws:cdk:path": "MeliesExportStack/ExportHttpStage/Resource"
+   }
+  },
+  "IdentityPool": {
+   "Type": "AWS::Cognito::IdentityPool",
+   "Properties": {
+    "AllowUnauthenticatedIdentities": true
+   },
+   "Metadata": {
+    "aws:cdk:path": "MeliesExportStack/IdentityPool"
+   }
+  },
+  "GuestRole80ECD357": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRoleWithWebIdentity",
+       "Condition": {
+        "StringEquals": {
+         "cognito-identity.amazonaws.com:aud": {
+          "Ref": "IdentityPool"
+         }
+        },
+        "ForAnyValue:StringLike": {
+         "cognito-identity.amazonaws.com:amr": "unauthenticated"
+        }
+       },
+       "Effect": "Allow",
+       "Principal": {
+        "Federated": "cognito-identity.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "MeliesExportStack/GuestRole/Resource"
+   }
+  },
+  "GuestRoleDefaultPolicy074E2FB1": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "execute-api:Invoke",
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":execute-api:",
+           {
+            "Ref": "AWS::Region"
+           },
+           ":",
+           {
+            "Ref": "AWS::AccountId"
+           },
+           ":",
+           {
+            "Ref": "ExportHttpApiAB019D1B"
+           },
+           "/prod/*/health"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":execute-api:",
+           {
+            "Ref": "AWS::Region"
+           },
+           ":",
+           {
+            "Ref": "AWS::AccountId"
+           },
+           ":",
+           {
+            "Ref": "ExportHttpApiAB019D1B"
+           },
+           "/prod/*/export*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "GuestRoleDefaultPolicy074E2FB1",
+    "Roles": [
+     {
+      "Ref": "GuestRole80ECD357"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "MeliesExportStack/GuestRole/DefaultPolicy/Resource"
+   }
+  },
+  "IdentityPoolRoleAttachment": {
+   "Type": "AWS::Cognito::IdentityPoolRoleAttachment",
+   "Properties": {
+    "IdentityPoolId": {
+     "Ref": "IdentityPool"
+    },
+    "Roles": {
+     "unauthenticated": {
+      "Fn::GetAtt": [
+       "GuestRole80ECD357",
+       "Arn"
+      ]
+     }
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "MeliesExportStack/IdentityPoolRoleAttachment"
+   }
+  },
   "CDKMetadata": {
    "Type": "AWS::CDK::Metadata",
    "Properties": {
-    "Analytics": "v2:deflate64:H4sIAAAAAAAA/21R21LCMBD9Ft7DKmX8AEAdeVCx9Z1Z0qUToEnNJmWYTP/dSYKAjk/nkuTsSVJAMX2AyQiPPJb1fnxQGwiVQ7kXeOR1YJKWHLeosSELoUpaLLY6s0HwFMLcy312zyzDyhyUPF3ts85ijkyDqE8aW1NvIHzi5kBxbyKD4C+G8OHJJzORQRyw3dS41qamHcNbgmevpVNGC4UthNLklITXApnFtmtkJscwi3AOhLDY6kvOo5F7sssWG7p4Tz1pVxlvJb1i1yndxNT/3RXZVjErowdB0v4MvInNs0laKKkzrJyxp/geAjvVoKMjnvoCwotz3axTMTNClJXDJt0vk2iVxrvMltpRYzEVXmz1H5n2DYNYeHamLYlT77Ry4b+WVtb0qiabmqXKcWi85O3hd+867wYR/wR2fNcXBUymcD/asVJj67VTLUGZ8Ru973rmbwIAAA=="
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/21RwW7bMAz9lt4VNXOA3dN0Q3PYljq9B7TMuEps0RWpBIahfx8kZ0la7PTeo6T3SKrQxeK7nj/AmWemPs5aW+lxK2COCs68G3mhx6dgjihqtXcXNsGGWmuGW/miJ/EEjFHVg4OO6kqPb1C1mO5mEhV/sB5fA4ZczCSqFrqqhp2jGg+sf2f4GZwRS05Z6PRY0uSS8dbAxKLixQ6YUVgvE1wM9bjau6vPM5kj+nUHDV5rP07oZEvBG/wFfW9dk1z/X92g7yyzJRcVGv8v8M52ykbjdYk9sRXyQ9qHgt42IHiG4VTo8UWkX/Y2eSZIsqQgmNnaCTYecnervfsib/e2Ak3eSCZRGWqcFcojr2t0YmXYELXqi04LXIqAee/QSYxqFVioK5HzvDnkyj8dbTydbI0+T5RHTdFpOfeP/wTpg0SV/lIf+PFUFPrbQs8fDmztzAcntkNdTvgXWzs/GYUCAAA="
    },
    "Metadata": {
     "aws:cdk:path": "MeliesExportStack/CDKMetadata/Default"
@@ -1128,17 +1277,44 @@
   }
  },
  "Outputs": {
-  "ExportApiEndpoint": {
+  "ExportApiBaseUrl": {
    "Value": {
-    "Fn::GetAtt": [
-     "ExportHttpApiAB019D1B",
-     "ApiEndpoint"
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "ExportHttpApiAB019D1B"
+      },
+      ".execute-api.",
+      {
+       "Ref": "AWS::Region"
+      },
+      ".",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/prod"
+     ]
     ]
    }
   },
-  "ExportSigningSecretArn": {
+  "ExportApiId": {
    "Value": {
-    "Ref": "SigningSecretCF7EC744"
+    "Ref": "ExportHttpApiAB019D1B"
+   }
+  },
+  "ExportStageName": {
+   "Value": "prod"
+  },
+  "ExportIdentityPoolId": {
+   "Value": {
+    "Ref": "IdentityPool"
+   }
+  },
+  "ExportRegion": {
+   "Value": {
+    "Ref": "AWS::Region"
    }
   },
   "ExportAssetsBucket": {
