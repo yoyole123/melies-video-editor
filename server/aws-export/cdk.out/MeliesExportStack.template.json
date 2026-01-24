@@ -23,7 +23,7 @@
         "HEAD"
        ],
        "AllowedOrigins": [
-        "https://sparkle-stories-c8b62fef.base44.app"
+        "https://*.base44.app"
        ],
        "ExposedHeaders": [
         "ETag"
@@ -217,7 +217,7 @@
         "HEAD"
        ],
        "AllowedOrigins": [
-        "https://sparkle-stories-c8b62fef.base44.app"
+        "https://*.base44.app"
        ],
        "ExposedHeaders": [
         "ETag"
@@ -757,7 +757,7 @@
    "Properties": {
     "Code": {
      "ImageUri": {
-      "Fn::Sub": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-${AWS::AccountId}-${AWS::Region}:e522288a020de569dc5085ae7ae401a930acfc098ef14476526190a4dcd665d2"
+      "Fn::Sub": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-${AWS::AccountId}-${AWS::Region}:2f6fc5a20af7575e2602516da897d77ea2e8d14e1b2cb5509bcdc3ed1f4cec41"
      }
     },
     "Environment": {
@@ -796,7 +796,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "MeliesExportStack/ExportWorkerLambda/Resource",
-    "aws:asset:path": "asset.e522288a020de569dc5085ae7ae401a930acfc098ef14476526190a4dcd665d2",
+    "aws:asset:path": "asset.2f6fc5a20af7575e2602516da897d77ea2e8d14e1b2cb5509bcdc3ed1f4cec41",
     "aws:asset:dockerfile-path": "worker-image/Dockerfile",
     "aws:asset:property": "Code.ImageUri"
    }
@@ -835,7 +835,7 @@
       "POST"
      ],
      "AllowOrigins": [
-      "https://sparkle-stories-c8b62fef.base44.app"
+      "*"
      ],
      "MaxAge": 864000
     },

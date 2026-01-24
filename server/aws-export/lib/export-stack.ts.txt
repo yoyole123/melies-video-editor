@@ -18,14 +18,13 @@ export class ExportStack extends Stack {
     super(scope, id, props);
 
     const stageName = 'prod';
-    const s3AllowedOrigins = ['https://*.base44.app'];
-    const apiAllowedOrigins = ['*'];
+    const allowedOrigins = ['https://sparkle-stories-c8b62fef.base44.app'];
 
     const assetsBucket = new s3.Bucket(this, 'AssetsBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       cors: [
         {
-          allowedOrigins: s3AllowedOrigins,
+          allowedOrigins: allowedOrigins,
           allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.HEAD],
           allowedHeaders: ['*'],
           exposedHeaders: ['ETag'],
@@ -41,7 +40,7 @@ export class ExportStack extends Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       cors: [
         {
-          allowedOrigins: s3AllowedOrigins,
+          allowedOrigins: allowedOrigins,
           allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.HEAD],
           allowedHeaders: ['*'],
           exposedHeaders: ['ETag'],
@@ -123,7 +122,7 @@ export class ExportStack extends Stack {
       apiName: 'melies-export-api',
       createDefaultStage: false,
       corsPreflight: {
-        allowOrigins: apiAllowedOrigins,
+        allowOrigins: allowedOrigins,
         allowMethods: [apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.POST],
         allowHeaders: [
           'content-type',

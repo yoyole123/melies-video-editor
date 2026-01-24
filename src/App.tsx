@@ -2910,13 +2910,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
                   onClick={() => setIsVersionTooltipOpen((v) => !v)}
                   title="Version"
                 >
-                  <img
-                    src="/info.png"
-                    alt=""
-                    aria-hidden="true"
-                    className="debug-version-icon"
-                    draggable={false}
-                  />
+                  <span aria-hidden="true">i</span>
                 </button>
                 {isVersionTooltipOpen ? (
                   <div className="debug-version-tooltip" role="tooltip">
