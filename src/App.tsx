@@ -290,6 +290,16 @@ export type MeliesVideoEditorProps = {
    * stable asset identifiers if they need cross-session restore.
    */
   onFootageImported?: (event: MeliesFootageImportEvent) => void;
+
+  /**
+   * Host-facing export hook.
+   *
+   * When provided, the in-editor Export button will call this callback instead of using
+   * the built-in local `/export` POST.
+   *
+   * The host app should orchestrate export (e.g. S3 presign upload → job start → poll → download).
+   */
+  onExport?: (event: MeliesExportEvent) => void | Promise<void>;
 };
 
 export type MeliesFootageImportEntry = {
@@ -306,6 +316,33 @@ export type MeliesFootageImportEvent = {
   items: FootageItem[];
   /** Convenience list of files. */
   files: File[];
+};
+
+export type MeliesExportAsset = {
+  /** The timeline join key for this asset (action.data.src). */
+  src: string;
+  /** Best-effort classification based on how the asset is used in the timeline. */
+  kind: 'video' | 'audio' | 'unknown';
+  /** Optional metadata (only available when the editor has seen it this session). */
+  name?: string;
+  /** Optional metadata (only available when the editor has seen it this session). */
+  mimeType?: string;
+};
+
+export type MeliesExportEvent = {
+  /** A deep-cloned snapshot of the current timeline state (safe to persist/mutate). */
+  snapshot: MeliesTimelineSnapshot;
+  /** Convenience list of unique src keys referenced by the timeline. */
+  assetSrcs: string[];
+  /** Richer asset list with best-effort metadata. */
+  assets: MeliesExportAsset[];
+  /**
+   * Returns a File for a given src when the editor has access to bytes this session.
+   * For stable src keys (e.g. Base44 asset IDs), hosts should resolve bytes themselves.
+   */
+  getFileBySrc: (src: string) => File | null;
+  /** Lists all in-session Files the editor can provide, keyed by src. */
+  listSessionFiles: () => Array<{ src: string; file: File }>;
 };
 
 export type MeliesTimelineSnapshot = {
@@ -383,6 +420,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
     initialTimelineSnapshot,
     onTimelineStateChange,
     onFootageImported,
+    onExport,
   }: MeliesVideoEditorProps,
   ref
 ) {
@@ -406,6 +444,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const importedObjectUrlsRef = useRef<string[]>([]);
   const importedFilesByIdRef = useRef<Map<string, File>>(new Map());
+  const sessionFilesBySrcRef = useRef<Map<string, File>>(new Map());
 
   // audioControl is a module singleton. When this editor unmounts (or when we load
   // a new timeline snapshot), we must reset it so it doesn't retain stale action ids
@@ -442,6 +481,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
     const next: FootageItem[] = files.map((file, index) => {
       const url = URL.createObjectURL(file);
       urlsToRevoke.push(url);
+      sessionFilesBySrcRef.current.set(url, file);
       mediaCache.registerSrcMeta(url, { name: file.name, mimeType: file.type });
       return {
         id: `file-${index}`,
@@ -460,6 +500,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
         } catch {
           // ignore
         }
+        sessionFilesBySrcRef.current.delete(url);
       }
     };
   }, [footageFiles]);
@@ -483,6 +524,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
           if (cancelled) return;
           const url = URL.createObjectURL(file);
           urlsToRevoke.push(url);
+          sessionFilesBySrcRef.current.set(url, file);
           mediaCache.registerSrcMeta(url, { name: file.name || handle?.name, mimeType: file.type });
           next.push({
             id: `handle-${index}`,
@@ -508,6 +550,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
         } catch {
           // ignore
         }
+        sessionFilesBySrcRef.current.delete(url);
       }
     };
   }, [footageFileHandles]);
@@ -520,6 +563,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
         } catch {
           // ignore
         }
+        sessionFilesBySrcRef.current.delete(url);
       }
       importedObjectUrlsRef.current = [];
       importedFilesByIdRef.current.clear();
@@ -569,6 +613,64 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
       editorData,
       selectedActionId,
       timelineScaleWidth,
+    };
+  };
+
+  /**
+   * Build the payload for the host app to orchestrate export.
+   *
+   * This is called on-demand (e.g. when the user presses Export), so it always reflects the latest state.
+   */
+  const buildExportEvent = (): MeliesExportEvent => {
+    const snapshot = getTimelineSnapshot();
+
+    const usageBySrc = new Map<string, { usesVideo: boolean; usesAudio: boolean }>();
+    const rows = Array.isArray(snapshot.editorData) ? snapshot.editorData : [];
+
+    for (const row of rows) {
+      const actions = Array.isArray((row as any)?.actions) ? (row as any).actions : [];
+      for (const action of actions) {
+        const src = (action as any)?.data?.src;
+        if (!src) continue;
+        const key = String(src);
+        if (!key) continue;
+
+        const effectId = String((action as any)?.effectId ?? '');
+        const prev = usageBySrc.get(key) ?? { usesVideo: false, usesAudio: false };
+        const next = { ...prev };
+
+        if (effectId === 'effect1') next.usesVideo = true;
+        if (effectId === 'effect0' || effectId === 'effect2') next.usesAudio = true;
+
+        usageBySrc.set(key, next);
+      }
+    }
+
+    const assetSrcs = Array.from(usageBySrc.keys());
+    const assets: MeliesExportAsset[] = assetSrcs.map((src) => {
+      const usage = usageBySrc.get(src) ?? { usesVideo: false, usesAudio: false };
+      const meta = mediaCache.getSrcMeta(src);
+      const kind: MeliesExportAsset['kind'] = usage.usesVideo ? 'video' : usage.usesAudio ? 'audio' : 'unknown';
+      return {
+        src,
+        kind,
+        name: meta?.name,
+        mimeType: meta?.mimeType,
+      };
+    });
+
+    return {
+      snapshot,
+      assetSrcs,
+      assets,
+      getFileBySrc: (src: string) => {
+        const key = String(src ?? '');
+        if (!key) return null;
+        return sessionFilesBySrcRef.current.get(key) ?? null;
+      },
+      listSessionFiles: () => {
+        return Array.from(sessionFilesBySrcRef.current.entries()).map(([src, file]) => ({ src, file }));
+      },
     };
   };
 
@@ -2656,6 +2758,7 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
       try {
         const url = URL.createObjectURL(file);
         urls.push(url);
+        sessionFilesBySrcRef.current.set(url, file);
         mediaCache.registerSrcMeta(url, { name: file.name, mimeType: file.type });
         const item: FootageItem = {
           id: `import-${uid()}`,
@@ -2877,6 +2980,8 @@ const MeliesVideoEditor = forwardRef<MeliesVideoEditorRef, MeliesVideoEditorProp
           canRedo={future.length > 0}
           onUndo={undo}
           onRedo={redo}
+          onExport={onExport}
+          buildExportEvent={buildExportEvent}
         />
         <div
           className={`timeline-drop${isTimelineOver ? ' is-over' : ''}`}

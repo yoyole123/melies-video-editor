@@ -276,6 +276,7 @@ export default function HostApp({
             footageFiles={footageFiles}
             footageFileHandles={footageFileHandles}
             onFootageImported={handleFootageImported}
+            onExport={(e) => console.log("Export event", e)}
           />
         </main>
       </div>

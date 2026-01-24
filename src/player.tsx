@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import audioControl from './audioControl';
 import videoControl from './videoControl';
 import mediaCache from './mediaCache';
+import type { MeliesExportEvent } from './App';
 import playButtonUrl from './assets/play-button.png';
 import pauseButtonUrl from './assets/pause-button.png';
 import undoIconUrl from './assets/undo.png';
@@ -28,6 +29,8 @@ const TimelinePlayer = ({
   canRedo,
   onUndo,
   onRedo,
+  onExport,
+  buildExportEvent,
 }: {
   timelineState: React.MutableRefObject<TimelineState | null>;
   autoScrollWhenPlay: React.MutableRefObject<boolean>;
@@ -42,6 +45,8 @@ const TimelinePlayer = ({
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
+  onExport?: (event: MeliesExportEvent) => void | Promise<void>;
+  buildExportEvent?: () => MeliesExportEvent;
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [time, setTime] = useState(0);
@@ -284,6 +289,12 @@ const TimelinePlayer = ({
     if (isExporting) return;
     setIsExporting(true);
     try {
+      // If the host provides an export handler, delegate the whole flow.
+      if (onExport && buildExportEvent) {
+        await Promise.resolve(onExport(buildExportEvent()));
+        return;
+      }
+
       const srcs = collectUniqueAssetSrcs();
       const form = new FormData();
       form.append('timeline', JSON.stringify({ editorData }));

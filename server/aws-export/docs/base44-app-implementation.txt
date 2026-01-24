@@ -3,7 +3,7 @@ Base44 App Integration Guide (Melies Export: AWS IAM + S3 + SQS)
 
 Goal
 ----
-Wire Base44’s Export button + the (planned) `onExport` callback so exports run the same end-to-end flow as the manual script:
+Wire Base44’s Export button using the editor’s `onExport` callback so exports run the same end-to-end flow as the manual script:
 
 1) Build timeline payload from the editor state
 2) Determine which media assets are referenced by the timeline
@@ -15,6 +15,10 @@ Wire Base44’s Export button + the (planned) `onExport` callback so exports run
 
 This matches the behavior in:
 - server/aws-export/scripts/test-manual.js
+
+Note:
+- The editor now supports `onExport`. When you provide it, the in-editor Export button will call your callback
+  (and will NOT run the built-in local `/export` upload).
 
 
 What Base44 must implement (checklist)
@@ -180,8 +184,34 @@ Playback vs export:
   by mapping `cloudUrl` back to assetId using the mediaLibrary manifest.
 
 
-Export API configuration (from CDK outputs)
-------------------------------------------
+New editor API: `onExport` (host callback)
+----------------------------------------
+The editor exposes a host-facing callback:
+
+- `onExport?: (event) => void | Promise<void>`
+
+When provided, the user clicking the in-editor Export button will invoke this callback.
+
+Event shape (conceptual):
+- `event.snapshot`: deep-cloned timeline snapshot `{ version, editorData, selectedActionId, timelineScaleWidth }`
+- `event.assetSrcs`: unique list of `action.data.src` referenced by the timeline
+- `event.assets`: richer list (best-effort metadata):
+  - `src`: the join key (must match assets[].src you send to the Export API)
+  - `kind`: `video | audio | unknown` based on timeline usage (effect1/effect0/effect2)
+  - `name?` / `mimeType?`: only if known in the current session
+- `event.getFileBySrc(src)`: returns a `File` if the editor has bytes this session (typically blob: sources)
+- `event.listSessionFiles()`: lists all in-session `{src,file}` pairs the editor can provide
+
+Wiring example (Base44 app):
+- Render the editor with `onExport={handleExport}`
+- Implement `handleExport(event)` to run: presign → upload → start export → poll → download
+
+Important: if your timeline uses stable IDs (recommended), `event.getFileBySrc()` may return null,
+because the bytes live in Base44 (OPFS/cloud). That’s expected — Base44 resolves bytes.
+
+
+Export API configuration
+------------------------
 Base44 must know:
 - apiBaseUrl: Export API base URL, including stage (e.g. https://.../prod)
 - region: AWS region
@@ -219,9 +249,13 @@ End-to-end export flow (browser)
 --------------------------------
 This is the exact flow Base44 should implement when the user clicks Export.
 
-Step 0: Get timeline snapshot from the editor
-- Use the editor ref API:
-  - getTimelineSnapshot() -> { version, editorData, selectedActionId, timelineScaleWidth }
+Step 0: Get timeline + asset list from `onExport`
+- Use the `onExport(event)` callback payload:
+  - event.snapshot -> { version, editorData, selectedActionId, timelineScaleWidth }
+  - event.assetSrcs / event.assets -> the unique referenced src keys
+
+(If you are not using the Export button and want to trigger export externally, you can still use the ref API:
+getTimelineSnapshot(), but `onExport` is the recommended integration point.)
 
 Step 1: Collect referenced assets from timeline
 - Iterate editorData rows/actions and collect unique action.data.src values.
@@ -234,6 +268,34 @@ Base44 should resolve assets in this order:
 2) Cloud storage URL download (fallback)
 
 The bytes that you upload to S3 must match the original file.
+
+
+Base44 `onExport` handler skeleton (pseudo-code)
+------------------------------------------------
+This demonstrates how to connect the editor `onExport` to the AWS export flow.
+
+Inputs (Base44 secrets):
+- MELIES_EXPORT_API_BASE_URL
+- MELIES_EXPORT_REGION
+- MELIES_EXPORT_IDENTITY_POOL_ID
+
+Pseudo-code outline:
+
+1) Read config from env vars.
+2) Create an IAM/SigV4 client (same idea as server/aws-export/client/iamExportClient.js).
+3) For each referenced asset src:
+  - Try `event.getFileBySrc(src)` first (works for in-session blob: sources)
+  - Otherwise resolve bytes via Base44 using your chosen src strategy (e.g. base44-asset:<assetId> → OPFS/cloud)
+4) POST /export/presign with [{ src, contentType, ext }]
+5) PUT each file to its presignedUrl
+6) POST /export with { timeline: event.snapshot, assets: [{ src, s3Key }] }
+7) Poll GET /export/{jobId} until SUCCEEDED/FAILED
+8) Download job.downloadUrl (it is presigned; it expires)
+
+Implementation notes:
+- Upload concurrency: keep it bounded (e.g. 3-6 in parallel) to avoid browser/network issues.
+- `src` is the join key: it must match exactly between timeline actions and assets[].src.
+- Video-with-audio requires both effect1 + effect2 actions in the timeline.
 
 Suggested interface:
 - resolveAssetBlob(srcKey) -> Promise<{ blob, contentType, ext }>
