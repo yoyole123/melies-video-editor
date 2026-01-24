@@ -757,7 +757,7 @@
    "Properties": {
     "Code": {
      "ImageUri": {
-      "Fn::Sub": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-${AWS::AccountId}-${AWS::Region}:2f6fc5a20af7575e2602516da897d77ea2e8d14e1b2cb5509bcdc3ed1f4cec41"
+      "Fn::Sub": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-${AWS::AccountId}-${AWS::Region}:eb42d44ebfb9f4b0a4663d152e5f66adcd082b39112c8ed120ed8be85423b0bd"
      }
     },
     "Environment": {
@@ -796,7 +796,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "MeliesExportStack/ExportWorkerLambda/Resource",
-    "aws:asset:path": "asset.2f6fc5a20af7575e2602516da897d77ea2e8d14e1b2cb5509bcdc3ed1f4cec41",
+    "aws:asset:path": "asset.eb42d44ebfb9f4b0a4663d152e5f66adcd082b39112c8ed120ed8be85423b0bd",
     "aws:asset:dockerfile-path": "worker-image/Dockerfile",
     "aws:asset:property": "Code.ImageUri"
    }

@@ -7,51 +7,14 @@ const TARGET_AUDIO_RATE = Number(process.env.EXPORT_AUDIO_RATE ?? 48000);
 
 export type Segment =
   | { type: 'gap'; duration: number }
-  | { type: 'clip'; duration: number; src: string };
+  | { type: 'clip'; duration: number; src: string; startInSource: number };
 
-export type TimelineAction = { start: number; end: number; src: string };
+export type TimelineAction = { start: number; end: number; src: string; offset: number; layer: number };
 
 function clampNonNegativeNumber(value: unknown) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, n);
-}
-
-function buildSegments(editorData: unknown, kind: 'video' | 'audio') {
-  // kind: 'video' | 'audio'
-  const effectIds = kind === 'video' ? ['effect1'] : ['effect0', 'effect2'];
-  const actions: TimelineAction[] = [];
-  const rows = Array.isArray(editorData) ? editorData : [];
-  for (const row of rows) {
-    const rowActions = (row as { actions?: unknown[] } | null | undefined)?.actions;
-    if (!Array.isArray(rowActions)) continue;
-    for (const action of rowActions) {
-      if (!action || typeof action !== 'object') continue;
-      const a = action as { effectId?: unknown; start?: unknown; end?: unknown; data?: { src?: unknown } };
-      if (!effectIds.includes(String(a.effectId))) continue;
-      const start = clampNonNegativeNumber(a.start);
-      const end = clampNonNegativeNumber(a.end);
-      const src = a?.data?.src;
-      if (!src) continue;
-      if (end <= start) continue;
-      actions.push({ start, end, src: String(src) });
-    }
-  }
-
-  actions.sort((a, b) => a.start - b.start);
-
-  // Convert to a gap+clip segment list, clamping overlaps.
-  const segments: Segment[] = [];
-  let t = 0;
-  for (const a of actions) {
-    const start = Math.max(t, a.start);
-    const end = Math.max(start, a.end);
-    if (start > t) segments.push({ type: 'gap', duration: start - t });
-    if (end > start) segments.push({ type: 'clip', duration: end - start, src: a.src });
-    t = Math.max(t, end);
-  }
-
-  return { segments, actions };
 }
 
 function collectActions(editorData: unknown, effectIds: string[]) {
@@ -62,18 +25,106 @@ function collectActions(editorData: unknown, effectIds: string[]) {
     if (!Array.isArray(rowActions)) continue;
     for (const action of rowActions) {
       if (!action || typeof action !== 'object') continue;
-      const a = action as { effectId?: unknown; start?: unknown; end?: unknown; data?: { src?: unknown } };
+      const a = action as {
+        effectId?: unknown;
+        start?: unknown;
+        end?: unknown;
+        data?: { src?: unknown; offset?: unknown; videoLayer?: unknown };
+      };
+
       if (!effectIds.includes(String(a.effectId))) continue;
       const start = clampNonNegativeNumber(a.start);
       const end = clampNonNegativeNumber(a.end);
       const src = a?.data?.src;
+      const offset = clampNonNegativeNumber(a?.data?.offset);
+      const layer = Number(a?.data?.videoLayer ?? 0);
+
       if (!src) continue;
       if (end <= start) continue;
-      actions.push({ start, end, src: String(src) });
+      actions.push({ start, end, src: String(src), offset, layer });
     }
   }
-  actions.sort((a, b) => a.start - b.start);
   return actions;
+}
+
+function buildVideoSegments(editorData: unknown): Segment[] {
+  const actions = collectActions(editorData, ['effect1']);
+
+  // Get all unique time points (start, end, and 0)
+  const boundaries = new Set<number>();
+  boundaries.add(0);
+  // Ensure we cover the full duration
+  const totalDuration = getTotalDuration(editorData);
+  boundaries.add(totalDuration);
+
+  for (const a of actions) {
+    boundaries.add(a.start);
+    boundaries.add(a.end);
+  }
+
+  const sortedTimes = Array.from(boundaries).sort((a, b) => a - b);
+  const segments: Segment[] = [];
+
+  for (let i = 0; i < sortedTimes.length - 1; i++) {
+    const tStart = sortedTimes[i];
+    const tEnd = sortedTimes[i + 1];
+    const dur = tEnd - tStart;
+
+    if (dur <= 0.000001) continue;
+
+    // Find all actions active in [tStart, tEnd]
+    // An action [S, E] covers [tS, tE] if S <= tS and E >= tE
+    const candidates = actions.filter((a) => a.start <= tStart + 0.00001 && a.end >= tEnd - 0.00001);
+
+    if (candidates.length === 0) {
+      segments.push({ type: 'gap', duration: dur });
+    } else {
+      // Sort by layer descending, then by start time descending (active last wins?)
+      // Requirement: "show only the video on top" -> highest layer.
+      candidates.sort((a, b) => {
+        if (a.layer !== b.layer) return b.layer - a.layer;
+        return b.start - a.start; // Tie-breaker: generally later start might mean 'placed on top' in some contexts, or arbitrary.
+      });
+      const winner = candidates[0];
+
+      // Calculate startInSource
+      // Time elapsed since action start: tStart - winner.start
+      // Source time = action.offset + elapsed
+      const currentOffset = winner.offset + (tStart - winner.start);
+
+      segments.push({
+        type: 'clip',
+        duration: dur,
+        src: winner.src,
+        startInSource: currentOffset,
+      });
+    }
+  }
+
+  // Merge adjacent compatible segments (optional optimization, reduces ffmpeg filter graph size)
+  const merged: Segment[] = [];
+  for (const seg of segments) {
+    if (merged.length === 0) {
+      merged.push(seg);
+      continue;
+    }
+    const last = merged[merged.length - 1];
+    if (last.type === 'gap' && seg.type === 'gap') {
+      last.duration += seg.duration;
+    } else if (
+      last.type === 'clip' &&
+      seg.type === 'clip' &&
+      last.src === seg.src &&
+      Math.abs(last.startInSource + last.duration - seg.startInSource) < 0.001
+    ) {
+      // Contiguous clip
+      last.duration += seg.duration;
+    } else {
+      merged.push(seg);
+    }
+  }
+
+  return merged;
 }
 
 function getTotalDuration(editorData: unknown) {
@@ -117,19 +168,23 @@ export function buildFfmpegArgs(params: {
   const totalDuration = getTotalDuration(editorData);
   const safeTotalDuration = totalDuration > 0 ? totalDuration : 0.04;
 
-  const videoPlan = buildSegments(editorData, 'video');
+  // Use the new video flattening logic handling layers/trims
+  let videoSegments = buildVideoSegments(editorData);
+  
   // Audio is handled via mixing (supports overlaps / multiple layers).
   const audioActions = collectActions(editorData, ['effect0', 'effect2']);
 
-  // If there are no video actions, generate a black video for the full duration.
-  const videoSegments: Segment[] = videoPlan.segments.length
-    ? [...videoPlan.segments]
-    : [{ type: 'gap', duration: totalDuration }];
+  // If there are no video segments, generate a black video for the full duration.
+  if (videoSegments.length === 0) {
+    videoSegments = [{ type: 'gap', duration: safeTotalDuration }];
+  }
 
-  // Add trailing gaps to reach total duration.
+  // Ensure video track length matches total duration (fill trailing gap)
   const sumDur = (segs: Segment[]) => segs.reduce((acc, s) => acc + (Number(s.duration) || 0), 0);
   const vSum = sumDur(videoSegments);
-  if (totalDuration > vSum) videoSegments.push({ type: 'gap', duration: totalDuration - vSum });
+  if (totalDuration > vSum + 0.001) {
+    videoSegments.push({ type: 'gap', duration: totalDuration - vSum });
+  }
 
   const videoSrcs = uniqueStrings(videoSegments.filter((s) => s.type === 'clip').map((s) => (s as any).src));
   const audioSrcs = uniqueStrings(audioActions.map((a) => a.src));
@@ -173,8 +228,10 @@ export function buildFfmpegArgs(params: {
       filters.push(`color=c=black:s=${TARGET_WIDTH}x${TARGET_HEIGHT}:r=${TARGET_FPS}:d=${dur},format=yuv420p[${label}]`);
     } else {
       const idx = inputIndexBySrc.get(seg.src)!;
+      // Use offset from flattening logic
+      const startInSource = seg.startInSource ?? 0;
       filters.push(
-        `[${idx}:v]trim=start=0:duration=${dur},setpts=PTS-STARTPTS,fps=${TARGET_FPS},` +
+        `[${idx}:v]trim=start=${startInSource.toFixed(4)}:duration=${dur},setpts=PTS-STARTPTS,fps=${TARGET_FPS},` +
           `scale=${TARGET_WIDTH}:${TARGET_HEIGHT}:force_original_aspect_ratio=decrease,` +
           `pad=${TARGET_WIDTH}:${TARGET_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black,` +
           `format=yuv420p[${label}]`
@@ -202,8 +259,10 @@ export function buildFfmpegArgs(params: {
       const idx = inputIndexBySrc.get(action.src)!;
       const delayMs = Math.max(0, Math.round(Number(action.start) * 1000));
       const label = `am${aLabels.length}`;
+      // Use action.offset for audio start point
+      const offset = action.offset || 0;
       filters.push(
-        `[${idx}:a]atrim=start=0:duration=${dur},asetpts=PTS-STARTPTS,` +
+        `[${idx}:a]atrim=start=${offset.toFixed(4)}:duration=${dur},asetpts=PTS-STARTPTS,` +
           `aresample=${TARGET_AUDIO_RATE}:async=1,adelay=${delayMs}|${delayMs}[${label}]`
       );
       aLabels.push(`[${label}]`);
